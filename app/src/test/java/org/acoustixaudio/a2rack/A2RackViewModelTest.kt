@@ -32,6 +32,15 @@ class A2RackViewModelTest {
         override fun stopEngine() { stops++; running = false }
         override fun setMuted(muted: Boolean) {}
         override fun setDeviceIds(inputId: Int, outputId: Int) {}
+        var diagnosticsCalls = 0
+        var diagnosticsFailure: RuntimeException? = null
+        override fun diagnostics(): AudioDiagnostics {
+            diagnosticsCalls++
+            diagnosticsFailure?.let { throw it }
+            return AudioDiagnostics(streamId = 1, streamsOpen = running, running = running,
+                muted = !running, inputDeviceId = 10, outputDeviceId = 20, sampleRate = 48000,
+                inputPeak = 0.5f, outputPeak = 0.25f)
+        }
         override fun isRecoverableError() = false
         override fun isRunning() = running
         override fun lastError() = "Audio device unavailable"
@@ -44,6 +53,67 @@ class A2RackViewModelTest {
     }
 
     @get:org.junit.Rule val temporary = org.junit.rules.TemporaryFolder()
+
+    @Test fun diagnosticsPollAtFourHzAndPauseWithTheActivity() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        val backend = Backend()
+        val vm = A2RackViewModel(backend, dispatcher, diagnosticsClock = { testScheduler.currentTime })
+        val store = ViewModelStore().apply { put("engine", vm) }
+        try {
+            assertEquals(0, backend.diagnosticsCalls)
+            vm.onRouteChanged(AudioRoute(10, 20, "USB", true, inputName = "USB Input", outputName = "USB Output"))
+            vm.onForegroundChanged(true, true)
+            runCurrent()
+            val initial = backend.diagnosticsCalls
+            advanceTimeBy(250)
+            runCurrent()
+            assertEquals(initial + 1, backend.diagnosticsCalls)
+            assertEquals(48000, vm.diagnostics.value.sampleRate)
+            assertEquals("USB Input", vm.diagnostics.value.inputName)
+            assertEquals("USB Output", vm.diagnostics.value.outputName)
+            vm.onForegroundChanged(false, true)
+            runCurrent()
+            val paused = backend.diagnosticsCalls
+            assertEquals(0f, vm.diagnostics.value.outputPeak)
+            advanceTimeBy(1000)
+            runCurrent()
+            assertEquals(paused, backend.diagnosticsCalls)
+            vm.onForegroundChanged(true, true)
+            runCurrent()
+            assertTrue(backend.diagnosticsCalls > paused)
+        } finally {
+            store.clear()
+            runCurrent()
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test fun diagnosticsFailureDoesNotStopAudioAndPollingCanRecover() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        val backend = Backend()
+        val vm = A2RackViewModel(backend, dispatcher)
+        val store = ViewModelStore().apply { put("engine", vm) }
+        try {
+            vm.onForegroundChanged(true, true)
+            runCurrent()
+            backend.diagnosticsFailure = IllegalStateException("Snapshot unavailable")
+            advanceTimeBy(250)
+            runCurrent()
+            assertEquals("Snapshot unavailable", vm.diagnostics.value.collectionError)
+            assertTrue(vm.uiState.value.isEngineRunning)
+            backend.diagnosticsFailure = null
+            advanceTimeBy(250)
+            runCurrent()
+            assertNull(vm.diagnostics.value.collectionError)
+            assertTrue(vm.uiState.value.isEngineRunning)
+        } finally {
+            store.clear()
+            runCurrent()
+            Dispatchers.resetMain()
+        }
+    }
 
     @Test fun savedModelsAndSettingsAreRestoredOnlyAfterSuccessfulStartup() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)

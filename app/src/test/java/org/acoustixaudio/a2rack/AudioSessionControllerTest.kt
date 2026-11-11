@@ -26,6 +26,7 @@ class AudioSessionControllerTest {
         override fun stopEngine() { stops++; running = false }
         override fun setMuted(muted: Boolean) { this.outputMuted = muted; if (!muted) unmutes++ }
         override fun setDeviceIds(inputId: Int, outputId: Int) { devices += inputId to outputId }
+        override fun diagnostics() = AudioDiagnostics(streamsOpen = running, running = running, muted = !running)
         override fun isRecoverableError() = recoverable
         override fun isRunning(): Boolean { onCheck?.invoke(); return running }
         override fun lastError() = "Device disconnected"

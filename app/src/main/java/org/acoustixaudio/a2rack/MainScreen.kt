@@ -185,6 +185,8 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                         Text("Export Preset")
                     }
                 }
+
+                AudioDiagnosticsPanel(viewModel)
             }
         }
     }

@@ -74,3 +74,12 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_org_acoustixaudio_a2rack_AudioEngine_isRecoverableError(JNIEnv*, jobject) {
     return engine.isRecoverableError();
 }
+
+extern "C" JNIEXPORT jdoubleArray JNICALL
+Java_org_acoustixaudio_a2rack_AudioEngine_nativeDiagnostics(JNIEnv* env, jobject) {
+    std::lock_guard<std::mutex> lock(controlMutex);
+    const auto snapshot = engine.diagnostics();
+    jdoubleArray result = env->NewDoubleArray(static_cast<jsize>(snapshot.size()));
+    if (result) env->SetDoubleArrayRegion(result, 0, static_cast<jsize>(snapshot.size()), snapshot.data());
+    return result;
+}

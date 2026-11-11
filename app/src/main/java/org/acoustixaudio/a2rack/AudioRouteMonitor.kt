@@ -32,7 +32,8 @@ internal fun selectAudioRoute(devices: List<AudioEndpoint>): AudioRoute {
         input.kind != EndpointKind.BUILTIN -> "${input.name} → device speaker"
         else -> "Device speaker / microphone"
     }
-    return AudioRoute(input.id, output.id, label, external)
+    return AudioRoute(input.id, output.id, label, external,
+        inputName = input.name, outputName = output.name)
 }
 
 /** Registered only while the activity is visible. The initial device callback is deduplicated by policy. */

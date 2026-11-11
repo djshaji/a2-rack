@@ -12,7 +12,8 @@ A prototype Android amp and cabinet processor built with Kotlin, Jetpack Compose
 | Cabinet responses | WAV validation and buffer warm-up implemented before activation |
 | Lite/Full mode | Switch updates UI state only; DSP behavior pending |
 | Presets | Persistent model library, versioned JSON, portable ZIP bundles, and automatic session restoration implemented |
-| Tests | JVM coverage for storage, bundle validation, session restoration, startup, shutdown, and controls; native/device coverage pending |
+| Diagnostics | Stream/device settings, latency estimates, xruns, signal meters, clipping, model status, and retained errors |
+| Tests | JVM coverage for storage, sessions, lifecycle/recovery, diagnostics, and controls; native/device coverage pending |
 
 The engine uses an Oboe-adapted 128-frame callback quantum, preallocated engine buffers, and worker-thread DSP warm-up. Model swaps use an atomic handoff; retired models are destroyed on the worker thread. This does not yet establish reliable real-time performance. Real-device audio validation is still required.
 
@@ -33,7 +34,7 @@ Install the SDK and native build tools requested by Gradle, and ensure the nativ
 ./gradlew :app:testDebugUnitTest
 ```
 
-The debug build passes after lifecycle/route integration, with all 33 JVM tests passing. Device tests and audio latency measurements are still required to validate real-time behavior.
+The debug build passes with all 44 JVM tests passing after diagnostics integration. Device tests and audio latency measurements are still required to validate real-time behavior.
 
 ## Using the prototype
 
@@ -56,6 +57,22 @@ The app prefers connected USB audio, then wired headphones/headsets, then the de
 Disconnect errors silence the native callback immediately. Device-list and audio-becoming-noisy callbacks also mute independently of model-loading work. After external audio is removed, the app waits for an external device rather than automatically switching to the speaker. Reconnecting reopens streams and reloads models. To intentionally use the speaker after unplugging, press Stop Audio, then Start Audio.
 
 Route events are debounced for 400 ms. Native disconnect faults can trigger up to two recovery attempts per route/foreground session; startup or unrecoverable processing failures remain stopped with an error and manual retry. Older streams' error callbacks are tagged so they cannot invalidate a newer stream.
+
+## Audio diagnostics
+
+Open **Show audio diagnostics** below the preset controls. Only the diagnostics content subscribes to meter updates, so the main controls do not recompose for each reading. Collection runs on the management worker four times per second while the activity is visible and pauses in the background.
+
+The panel displays:
+
+- Actual input/output device IDs with names from the route monitor, sample rate, input/output buffer sizes, output burst size, and callback size.
+- Estimated input/output stream latency and their sum. Unavailable timestamps remain unavailable; these estimates exclude extra external-device latency. Round-trip measurement requires a physical loopback.
+- Input/output xrun counters and input short-read callbacks, reset when streams reopen. Xruns report overruns/underruns and can indicate glitches; short reads count callbacks with missing input, including startup. Unsupported counters are shown as unavailable.
+- Input peaks before gain and output peaks before limiting, on a −60 to 0 dBFS meter. Levels above full scale are shown numerically and flagged. Clipping indicators hold for one second; muted output and inactive streams show silent meters.
+- Active, bypassed, unloaded, or unavailable model status, plus the latest recorded engine error retained through recovery.
+
+Stopped streams retain their final format/counters as **Last stream • inactive**. A new stream resets meter holds and counters. Snapshot failures are reported in the panel without stopping audio. Diagnostics are transient UI state and are not saved in presets.
+
+The native callback only accumulates peaks, clipping flags, and short-read counts through lock-free atomics. Stream queries, timestamp/latency calculation, JNI allocation, and formatting stay off the callback.
 
 ## Model library and presets
 
@@ -81,7 +98,9 @@ Legacy path-based JSON presets can migrate generated files that still exist in t
 - [AudioSessionController.kt](app/src/main/java/org/acoustixaudio/a2rack/AudioSessionController.kt): foreground/permission policy, Start/Stop intent, and serialized recovery.
 - [AudioRouteMonitor.kt](app/src/main/java/org/acoustixaudio/a2rack/AudioRouteMonitor.kt): device selection and Android route/noisy callbacks.
 - [native-lib.cpp](app/src/main/cpp/native-lib.cpp): JNI bridge and engine ownership.
-- [AudioEngine.cpp](app/src/main/cpp/AudioEngine.cpp): Oboe streams and DSP processing.
+- [AudioEngine.cpp](app/src/main/cpp/AudioEngine.cpp): Oboe streams, DSP processing, and native diagnostics snapshots.
+- [AudioDiagnostics.kt](app/src/main/java/org/acoustixaudio/a2rack/AudioDiagnostics.kt): snapshot decoding, meter scaling, and clipping/error presentation state.
+- [AudioDiagnosticsPanel.kt](app/src/main/java/org/acoustixaudio/a2rack/AudioDiagnosticsPanel.kt): diagnostics display and signal meters.
 - [CMakeLists.txt](app/src/main/cpp/CMakeLists.txt): native dependency integration.
 
 ## Known gaps and next steps
@@ -100,6 +119,7 @@ Legacy path-based JSON presets can migrate generated files that still exist in t
 4. Send the app to the background during startup/model loading; confirm silence, microphone release after queued work completes, and restoration on return.
 5. Open and return from each file picker; confirm the selected file is applied after foreground restoration.
 6. Change between interfaces with different sample rates. Confirm incompatible models are named with errors rather than processed at the wrong rate.
-7. Measure latency/dropouts and inspect logs for crashes during repeated changes.
+7. Open audio diagnostics and verify device names/IDs and sample rate against the connected hardware. Confirm meters respond, output reads silent when muted/stopped, and deliberate overload holds CLIP briefly.
+8. Watch xrun and short-read counters under realistic NAM load. Confirm counters reset after reopening streams. Measure round-trip latency with loopback hardware and inspect logs for crashes during repeated changes.
 
 This progress summary is based on the current source review. No `plan.md` was available in the project during that review.

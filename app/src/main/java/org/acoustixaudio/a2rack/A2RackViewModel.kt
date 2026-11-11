@@ -48,12 +48,18 @@ data class A2RackState(
 class A2RackViewModel internal constructor(
     private val backend: AudioBackend,
     private val engineDispatcher: CoroutineDispatcher,
-    private var repository: PresetRepository? = null
+    private var repository: PresetRepository? = null,
+    private val diagnosticsClock: () -> Long = { System.nanoTime() / 1_000_000 }
 ) : ViewModel() {
     constructor() : this(AudioEngine, AudioEngine.dispatcher)
 
     private val _uiState = MutableStateFlow(A2RackState())
     val uiState = _uiState.asStateFlow()
+    private val _diagnostics = MutableStateFlow(AudioDiagnostics())
+    val diagnostics = _diagnostics.asStateFlow()
+    private val diagnosticsTracker = DiagnosticsTracker()
+    private val deviceNames = mutableMapOf<Int, String>()
+    private var diagnosticsJob: Job? = null
     private var saveJob: Job? = null
     private var sessionLoaded = false
     private val operationMutex = Mutex()
@@ -69,8 +75,41 @@ class A2RackViewModel internal constructor(
                     audioStatus = next.status, routeLabel = next.route,
                     errorMessage = next.error ?: if (next.transitioning) null else it.errorMessage)
             }
-        }
+        },
+        onEngineError = ::rememberEngineError
     )
+
+    private fun rememberEngineError(message: String) {
+        diagnosticsTracker.rememberError(message)
+        _diagnostics.update { it.copy(lastEngineError = message) }
+    }
+
+    private fun startDiagnostics() {
+        if (diagnosticsJob?.isActive == true) return
+        diagnosticsJob = viewModelScope.launch {
+            while (visible.value) {
+                try {
+                    val (snapshot, error) = withContext(engineDispatcher) {
+                        backend.diagnostics() to backend.lastError()
+                    }
+                    if (!visible.value) break
+                    val previous = _diagnostics.value
+                    fun name(id: Int?, previousId: Int?, previousName: String): String =
+                        deviceNames[id] ?: if (id != null && id == previousId) previousName
+                        else id?.let { "Device #$it" } ?: "Unavailable"
+                    _diagnostics.value = diagnosticsTracker.update(snapshot, error, diagnosticsClock()).copy(
+                        inputName = name(snapshot.inputDeviceId, previous.inputDeviceId, previous.inputName),
+                        outputName = name(snapshot.outputDeviceId, previous.outputDeviceId, previous.outputName)
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _diagnostics.update { it.silenced().copy(collectionError = e.message ?: "Diagnostics unavailable.") }
+                }
+                delay(250)
+            }
+        }
+    }
 
     fun initializeStorage(context: Context) {
         if (repository == null) {
@@ -81,12 +120,23 @@ class A2RackViewModel internal constructor(
 
     fun startAudio() = session.start()
     fun stopAudio() = session.stop()
-    fun onRouteChanged(route: AudioRoute) = session.route(route)
+    fun onRouteChanged(route: AudioRoute) {
+        if (route.inputId > 0) deviceNames[route.inputId] = route.inputName
+        if (route.outputId > 0) deviceNames[route.outputId] = route.outputName
+        session.route(route)
+    }
     fun onAudioBecomingNoisy() = session.becomingNoisy()
 
     fun onForegroundChanged(isVisible: Boolean, permissionGranted: Boolean) {
         visible.value = isVisible
         session.foreground(isVisible, permissionGranted)
+        if (isVisible) startDiagnostics()
+        else {
+            diagnosticsJob?.cancel()
+            diagnosticsJob = null
+            diagnosticsTracker.pause()
+            _diagnostics.update { it.silenced().copy(streamsOpen = false) }
+        }
     }
 
     fun permissionGranted() = session.permission(true)
@@ -114,6 +164,7 @@ class A2RackViewModel internal constructor(
 
     override fun onCleared() {
         session.muteForShutdown()
+        diagnosticsJob?.cancel()
         saveJob?.cancel()
         val preset = _uiState.value.preset()
         val save = sessionLoaded

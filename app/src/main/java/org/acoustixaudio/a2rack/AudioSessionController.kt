@@ -14,7 +14,9 @@ data class AudioRoute(
     val outputId: Int = 0,
     val label: String = "System audio",
     val external: Boolean = false,
-    val available: Boolean = true
+    val available: Boolean = true,
+    val inputName: String = "System input",
+    val outputName: String = "System output"
 )
 
 internal data class AudioSessionState(
@@ -34,7 +36,8 @@ internal class AudioSessionController(
     private val mutex: Mutex,
     private val restore: suspend () -> Unit,
     private val flush: suspend () -> Unit,
-    private val changed: (AudioSessionState) -> Unit
+    private val changed: (AudioSessionState) -> Unit,
+    private val onEngineError: (String) -> Unit = {}
 ) {
     private var foreground = false
     private var permission = false
@@ -150,6 +153,7 @@ internal class AudioSessionController(
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    onEngineError(e.message ?: "Audio recovery failed.")
                     backend.setMuted(true)
                     withContext(dispatcher) { backend.stopEngine() }
                     if (epoch == revision) {
@@ -171,6 +175,7 @@ internal class AudioSessionController(
                     else backend.lastError().ifBlank { "Audio stopped." } to backend.isRecoverableError()
                 } ?: continue
                 if (epoch != revision) return@launch
+                onEngineError(failed.first)
                 backend.setMuted(true)
                 if (failed.second && retries < 2 && ready()) {
                     retries++

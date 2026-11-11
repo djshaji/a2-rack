@@ -25,6 +25,12 @@ bool AudioEngine::start() {
     mLastError.clear();
     mStreamState.store(static_cast<uint64_t>(++mStreamEpoch) << 32);
     mProcessingFailed.store(false);
+    ++mDiagnosticId;
+    mInputPeak.store(0.0f);
+    mOutputPeak.store(0.0f);
+    mInputClip.store(false);
+    mOutputClip.store(false);
+    mShortReads.store(0);
     if (!openPlaybackStream() || !openRecordStream()) {
         closeStreams();
         return false;
@@ -102,6 +108,9 @@ bool AudioEngine::openRecordStream() {
 
 void AudioEngine::closeStreams() {
     mRunning.store(false);
+    // Preserve final counters/format before closing; no stream queries run
+    // on the data callback, and controlMutex serializes management queries.
+    if (mPlayStream && mRecordStream) diagnostics();
     // Invalidate old callbacks before touching the stream pointers.
     mStreamState.store((static_cast<uint64_t>(++mStreamEpoch) << 32) |
                        static_cast<uint32_t>(streamError()));
@@ -244,6 +253,16 @@ oboe::DataCallbackResult AudioEngine::onAudioReady(
             return oboe::DataCallbackResult::Stop;
         }
         const int framesRead = result.value();
+        if (framesRead < kBlockSize) mShortReads.fetch_add(1, std::memory_order_relaxed);
+        float inputPeak = 0.0f;
+        bool inputClipped = false;
+        for (int i = 0; i < framesRead * channels; ++i) {
+            const float magnitude = std::abs(output[i]);
+            if (!std::isfinite(magnitude) || magnitude >= 1.0f) inputClipped = true;
+            if (std::isfinite(magnitude)) inputPeak = std::max(inputPeak, magnitude);
+        }
+        recordPeak(mInputPeak, inputPeak);
+        if (inputClipped) mInputClip.store(true, std::memory_order_relaxed);
         mMono.fill(0.0f);
         for (int i = 0; i < framesRead; ++i)
             mMono[i] = (output[i * 2] + output[i * 2 + 1]) * 0.5f * inputGain;
@@ -259,11 +278,20 @@ oboe::DataCallbackResult AudioEngine::onAudioReady(
             auto irOutput = mIrModel->Process(input, 1, kBlockSize);
             std::copy_n(irOutput[0], kBlockSize, mMono.data());
         }
+        float outputPeak = 0.0f;
+        bool outputClipped = false;
         for (int i = 0; i < kBlockSize; ++i) {
             const float value = mMono[i] * outputGain;
+            const float magnitude = std::abs(value);
+            if (!std::isfinite(magnitude) || magnitude >= 1.0f) outputClipped = true;
+            if (std::isfinite(magnitude)) outputPeak = std::max(outputPeak, magnitude);
             const float sample = std::isfinite(value) ? std::clamp(value, -1.0f, 1.0f) : 0.0f;
             output[i * 2] = sample;
             output[i * 2 + 1] = sample;
+        }
+        if (!mMuted.load() && isRunning()) {
+            recordPeak(mOutputPeak, outputPeak);
+            if (outputClipped) mOutputClip.store(true, std::memory_order_relaxed);
         }
     } catch (...) {
         // Never let a third-party DSP exception cross the C audio callback.
@@ -274,4 +302,51 @@ oboe::DataCallbackResult AudioEngine::onAudioReady(
     }
     if (mMuted.load() || !isRunning()) std::fill_n(output, numFrames * channels, 0.0f);
     return oboe::DataCallbackResult::Continue;
+}
+
+// Layout v1 mirrors AudioDiagnostics.decode(). Peaks/clips cover the interval
+// since the last snapshot. The only callback instrumentation is arithmetic and
+// lock-free atomics; stream queries and JNI allocations stay on the worker.
+std::array<double, 23> AudioEngine::diagnostics() {
+    auto values = mLastDiagnostics;
+    values[0] = 1; // schema
+    values[1] = mPlayStream && mRecordStream ? 1 : 0;
+    values[2] = isRunning() ? 1 : 0;
+    values[3] = mMuted.load() || !isRunning() ? 1 : 0;
+    if (!mPlayStream || !mRecordStream) {
+        if (values[4] == 0) {
+            values[12] = values[13] = values[14] = values[15] = -1;
+            values[11] = kBlockSize;
+        }
+        values[16] = values[17] = values[18] = values[19] = 0;
+        values[21] = values[22] = 0;
+        return values;
+    }
+    values[4] = mDiagnosticId;
+    values[5] = mRecordStream->getDeviceId();
+    values[6] = mPlayStream->getDeviceId();
+    values[7] = mPlayStream->getSampleRate();
+    values[8] = mRecordStream->getBufferSizeInFrames();
+    values[9] = mPlayStream->getBufferSizeInFrames();
+    values[10] = mPlayStream->getFramesPerBurst();
+    values[11] = kBlockSize;
+    const auto inputXruns = mRecordStream->getXRunCount();
+    const auto outputXruns = mPlayStream->getXRunCount();
+    values[12] = inputXruns == oboe::Result::OK ? inputXruns.value() : -1;
+    values[13] = outputXruns == oboe::Result::OK ? outputXruns.value() : -1;
+    const auto inputLatency = mRecordStream->calculateLatencyMillis();
+    const auto outputLatency = mPlayStream->calculateLatencyMillis();
+    values[14] = inputLatency == oboe::Result::OK ? inputLatency.value() : -1;
+    values[15] = outputLatency == oboe::Result::OK ? outputLatency.value() : -1;
+    values[16] = mInputPeak.exchange(0.0f, std::memory_order_relaxed);
+    values[17] = mOutputPeak.exchange(0.0f, std::memory_order_relaxed);
+    values[18] = mInputClip.exchange(false, std::memory_order_relaxed) ? 1 : 0;
+    values[19] = mOutputClip.exchange(false, std::memory_order_relaxed) ? 1 : 0;
+    values[20] = mShortReads.load(std::memory_order_relaxed);
+    values[21] = mNamModel ? 1 : 0;
+    values[22] = mIrModel ? 1 : 0;
+    if (!isRunning()) values[16] = values[17] = values[18] = values[19] = 0;
+    else if (mMuted.load()) values[17] = values[19] = 0;
+    mLastDiagnostics = values;
+    return values;
 }

@@ -26,6 +26,8 @@ public:
     bool isRunning() const { return mRunning.load() && streamError() == oboe::Result::OK; }
     bool isRecoverableError() const { return streamError() == oboe::Result::ErrorDisconnected; }
     std::string lastError() const;
+    // Versioned numeric snapshot; queried only on the management worker.
+    std::array<double, 23> diagnostics();
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream*, void*, int32_t) override;
 
 
@@ -85,6 +87,18 @@ private:
     int mInputDeviceId = 0;
     int mOutputDeviceId = 0;
     std::string mLastError;
+    std::atomic<float> mInputPeak{0.0f};
+    std::atomic<float> mOutputPeak{0.0f};
+    std::atomic<bool> mInputClip{false};
+    std::atomic<bool> mOutputClip{false};
+    std::atomic<uint32_t> mShortReads{0};
+    uint32_t mDiagnosticId = 0;
+    std::array<double, 23> mLastDiagnostics{};
+    static void recordPeak(std::atomic<float>& accumulator, float peak) {
+        float previous = accumulator.load(std::memory_order_relaxed);
+        while (peak > previous && !accumulator.compare_exchange_weak(
+                previous, peak, std::memory_order_relaxed)) {}
+    }
 };
 
 static_assert(std::atomic<float>::is_always_lock_free, "Audio parameters must be lock-free");

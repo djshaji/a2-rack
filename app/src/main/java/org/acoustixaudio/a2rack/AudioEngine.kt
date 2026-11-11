@@ -8,6 +8,7 @@ internal interface AudioBackend {
     fun isRecoverableError(): Boolean
     fun isRunning(): Boolean
     fun lastError(): String
+    fun diagnostics(): AudioDiagnostics
     // An empty path unloads the slot at the next audio callback boundary.
     fun loadNamModel(path: String): Boolean
     fun loadIrModel(path: String): Boolean
@@ -32,6 +33,8 @@ internal object AudioEngine : AudioBackend {
     external override fun isRecoverableError(): Boolean
     external override fun isRunning(): Boolean
     external override fun lastError(): String
+    private external fun nativeDiagnostics(): DoubleArray
+    override fun diagnostics(): AudioDiagnostics = AudioDiagnostics.decode(nativeDiagnostics())
 
     external override fun loadNamModel(path: String): Boolean
     external override fun loadIrModel(path: String): Boolean
