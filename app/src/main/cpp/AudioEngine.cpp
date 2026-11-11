@@ -142,6 +142,8 @@ bool AudioEngine::loadNamModel(const std::string& path) {
         if (!mRunning.load()) throw std::runtime_error("Start audio before loading an amp model.");
         ModelUpdate update;
         update.isNam = true;
+        // Empty paths explicitly unload a slot through the same safe handoff.
+        if (path.empty()) return publish(update);
         update.nam = nam::get_dsp(std::filesystem::path(path));
         if (!update.nam) throw std::runtime_error("The amp model could not be decoded.");
         if (update.nam->NumInputChannels() != 1 || update.nam->NumOutputChannels() != 1)
@@ -167,6 +169,11 @@ bool AudioEngine::loadNamModel(const std::string& path) {
 bool AudioEngine::loadIrModel(const std::string& path) {
     try {
         if (!mRunning.load()) throw std::runtime_error("Start audio before loading a cabinet response.");
+        if (path.empty()) {
+            ModelUpdate update;
+            update.isNam = false;
+            return publish(update);
+        }
         // Validate raw data before constructing the IR: empty data would
         // underflow the upstream convolution history length.
         dsp::ImpulseResponse::IRData data;

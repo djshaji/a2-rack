@@ -2,12 +2,12 @@ package org.acoustixaudio.a2rack
 
 import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,7 +15,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.io.File
 
 data class A2RackState(
@@ -26,40 +25,68 @@ data class A2RackState(
     val isA2Full: Boolean = false,
     val namFilePath: String? = null,
     val wavFilePath: String? = null,
+    val namAsset: AssetRef? = null,
+    val irAsset: AssetRef? = null,
+    val namIssue: String? = null,
+    val irIssue: String? = null,
     val isEngineRunning: Boolean = false,
     val isBusy: Boolean = false,
     val errorMessage: String? = null
-)
+) {
+    fun preset() = RackPreset(inputGain = inputGain, outputGain = outputGain,
+        isAmpBypassed = isAmpBypassed, isCabBypassed = isCabBypassed,
+        isA2Full = isA2Full, nam = namAsset, ir = irAsset)
+}
 
 class A2RackViewModel internal constructor(
     private val backend: AudioBackend,
-    private val engineDispatcher: CoroutineDispatcher
+    private val engineDispatcher: CoroutineDispatcher,
+    private var repository: PresetRepository? = null
 ) : ViewModel() {
     constructor() : this(AudioEngine, AudioEngine.dispatcher)
 
     private val _uiState = MutableStateFlow(A2RackState())
     val uiState = _uiState.asStateFlow()
     private var monitor: Job? = null
+    private var saveJob: Job? = null
+    private var sessionLoaded = false
+
+    fun initializeStorage(context: Context) {
+        if (repository == null) {
+            val app = context.applicationContext
+            repository = PresetRepository(File(app.filesDir, "rack-library"), app.cacheDir)
+        }
+    }
 
     fun startAudio() {
         if (_uiState.value.isBusy || _uiState.value.isEngineRunning) return
+        saveJob?.cancel()
         _uiState.update { it.copy(isBusy = true, errorMessage = null) }
         viewModelScope.launch {
-            val error = withContext(engineDispatcher) {
-                if (backend.startEngine()) {
-                    val state = _uiState.value
-                    backend.setInputGain(state.inputGain)
-                    backend.setOutputGain(state.outputGain)
-                    backend.setNamBypass(state.isAmpBypassed)
-                    backend.setIrBypass(state.isCabBypassed)
-                    null
-                } else backend.lastError().ifBlank { "Cannot start audio." }
+            try {
+                val preset = withContext(engineDispatcher) {
+                    // Avoid playing a dry or partially restored chain during startup.
+                    backend.setOutputGain(0f)
+                    check(backend.startEngine()) { backend.lastError().ifBlank { "Cannot start audio." } }
+                    if (!sessionLoaded) repository?.readSession() ?: _uiState.value.preset()
+                    else _uiState.value.preset()
+                }
+                sessionLoaded = true
+                applyPreset(preset)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val running = withContext(engineDispatcher) {
+                    backend.setOutputGain(_uiState.value.outputGain)
+                    backend.isRunning()
+                }
+                // A bad saved document must not prevent subsequent edits from being saved.
+                if (running) sessionLoaded = true
+                _uiState.update { it.copy(isEngineRunning = running, errorMessage = e.message ?: "Session restoration failed.") }
+            } finally {
+                _uiState.update { it.copy(isBusy = false) }
+                if (_uiState.value.isEngineRunning) monitorEngine()
             }
-            _uiState.update {
-                it.copy(isBusy = false, isEngineRunning = error == null,
-                    namFilePath = null, wavFilePath = null, errorMessage = error)
-            }
-            if (error == null) monitorEngine()
         }
     }
 
@@ -85,160 +112,217 @@ class A2RackViewModel internal constructor(
     }
 
     override fun onCleared() {
-        // Use the same queue as loading so native work finishes before shutdown.
-        CoroutineScope(engineDispatcher).launch { backend.stopEngine() }
+        saveJob?.cancel()
+        val preset = _uiState.value.preset()
+        val save = sessionLoaded
+        // Flush the final snapshot on the shared worker before shutting down.
+        CoroutineScope(engineDispatcher).launch {
+            try {
+                if (save) repository?.saveSession(preset)
+            } catch (e: Exception) {
+                android.util.Log.e("A2Rack", "Cannot save final session", e)
+            } finally { backend.stopEngine() }
+        }
         super.onCleared()
     }
 
     private fun validGain(gain: Float) = if (gain.isFinite()) gain.coerceIn(0f, 1f) else 0f
 
     fun updateInputGain(gain: Float) {
+        if (_uiState.value.isBusy) return
         val value = validGain(gain)
         _uiState.update { it.copy(inputGain = value) }
         backend.setInputGain(value)
+        scheduleSave()
     }
 
     fun updateOutputGain(gain: Float) {
+        if (_uiState.value.isBusy) return
         val value = validGain(gain)
         _uiState.update { it.copy(outputGain = value) }
         backend.setOutputGain(value)
+        scheduleSave()
     }
 
     fun toggleAmpBypass(bypassed: Boolean) {
+        if (_uiState.value.isBusy) return
         _uiState.update { it.copy(isAmpBypassed = bypassed) }
         backend.setNamBypass(bypassed)
+        scheduleSave()
     }
 
     fun toggleCabBypass(bypassed: Boolean) {
+        if (_uiState.value.isBusy) return
         _uiState.update { it.copy(isCabBypassed = bypassed) }
         backend.setIrBypass(bypassed)
+        scheduleSave()
     }
 
     fun toggleA2Mode(isFull: Boolean) {
+        if (_uiState.value.isBusy) return
         _uiState.update { it.copy(isA2Full = isFull) }
+        scheduleSave()
     }
 
-    fun loadNamFile(context: Context, uri: Uri) = loadFile(context, uri, true)
-    fun loadWavFile(context: Context, uri: Uri) = loadFile(context, uri, false)
+    private fun scheduleSave() {
+        if (!sessionLoaded || repository == null) return
+        saveJob?.cancel()
+        saveJob = viewModelScope.launch {
+            delay(300)
+            saveSession()
+        }
+    }
 
-    private fun loadFile(context: Context, uri: Uri, isNam: Boolean) {
+    private suspend fun saveSession() {
+        val preset = _uiState.value.preset()
+        try {
+            withContext(engineDispatcher) { repository?.saveSession(preset) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _uiState.update { it.copy(errorMessage = "Session could not be saved: ${e.message}") }
+        }
+    }
+
+    fun loadNamFile(context: Context, uri: Uri) = loadFile(context, uri, AssetKind.NAM)
+    fun loadWavFile(context: Context, uri: Uri) = loadFile(context, uri, AssetKind.IR)
+
+    private fun loadFile(context: Context, uri: Uri, kind: AssetKind) {
+        initializeStorage(context)
         if (!beginLoading()) return
-        val appContext = context.applicationContext
+        val resolver = context.applicationContext.contentResolver
         viewModelScope.launch {
             try {
-                withContext(engineDispatcher) {
-                    val file = copyUriToTempFile(appContext, uri, if (isNam) ".nam" else ".wav")
-                    try {
-                        val loaded = if (isNam) backend.loadNamModel(file.absolutePath)
-                                     else backend.loadIrModel(file.absolutePath)
-                        check(loaded) { backend.lastError().ifBlank { "Cannot load this file." } }
-                        _uiState.update {
-                            if (isNam) it.copy(namFilePath = file.absolutePath)
-                            else it.copy(wavFilePath = file.absolutePath)
-                        }
-                    } catch (e: Exception) {
-                        file.delete()
-                        throw e
-                    }
+                val loaded = withContext(engineDispatcher) {
+                    val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                        val column = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (column >= 0 && it.moveToFirst()) it.getString(column) else null
+                    } ?: "model.${kind.extension}"
+                    val input = resolver.openInputStream(uri) ?: error("Cannot read selected file.")
+                    val ref = repository!!.importAsset(input, name, kind)
+                    val file = repository!!.resolve(ref, kind) ?: error("Imported model is unavailable.")
+                    check(loadNative(kind, file.absolutePath)) { backend.lastError().ifBlank { "Cannot load this model." } }
+                    ref to file.absolutePath
                 }
+                _uiState.update {
+                    if (kind == AssetKind.NAM) it.copy(namAsset = loaded.first, namFilePath = loaded.second, namIssue = null)
+                    else it.copy(irAsset = loaded.first, wavFilePath = loaded.second, irIssue = null)
+                }
+                sessionLoaded = true
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _uiState.update { it.copy(errorMessage = e.message ?: "File loading failed.") }
+                _uiState.update { it.copy(errorMessage = e.message ?: "Model loading failed.") }
             } finally {
+                if (sessionLoaded) saveSession()
                 _uiState.update { it.copy(isBusy = false) }
             }
         }
     }
 
     private fun beginLoading(): Boolean {
-        val state = _uiState.value
-        if (state.isBusy) return false
-        if (!state.isEngineRunning) {
+        if (_uiState.value.isBusy) return false
+        if (!_uiState.value.isEngineRunning) {
             _uiState.update { it.copy(errorMessage = "Start audio before loading models or presets.") }
             return false
         }
+        saveJob?.cancel()
         _uiState.update { it.copy(isBusy = true, errorMessage = null) }
         return true
     }
 
-    fun exportPreset(context: Context, uri: Uri) {
-        val state = _uiState.value
+    fun exportPreset(context: Context, uri: Uri, portable: Boolean = true) {
+        initializeStorage(context)
+        if (_uiState.value.isBusy) return
+        val preset = _uiState.value.preset()
         val resolver = context.applicationContext.contentResolver
-        viewModelScope.launch(Dispatchers.IO) {
+        _uiState.update { it.copy(isBusy = true, errorMessage = null) }
+        viewModelScope.launch {
             try {
-                val json = JSONObject().apply {
-                    put("inputGain", state.inputGain.toDouble())
-                    put("outputGain", state.outputGain.toDouble())
-                    put("isAmpBypassed", state.isAmpBypassed)
-                    put("isCabBypassed", state.isCabBypassed)
-                    put("isA2Full", state.isA2Full)
-                    put("namFilePath", state.namFilePath ?: JSONObject.NULL)
-                    put("wavFilePath", state.wavFilePath ?: JSONObject.NULL)
+                withContext(engineDispatcher) {
+                    val output = resolver.openOutputStream(uri) ?: error("Cannot open preset destination.")
+                    output.use {
+                        if (portable) repository!!.writeBundle(preset, it)
+                        else repository!!.writeJson(preset, it)
+                    }
                 }
-                val output = resolver.openOutputStream(uri) ?: error("Cannot open preset destination.")
-                output.use { it.write(json.toString(4).toByteArray()) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 _uiState.update { it.copy(errorMessage = e.message ?: "Preset export failed.") }
-            }
+            } finally { _uiState.update { it.copy(isBusy = false) } }
         }
     }
 
     fun importPreset(context: Context, uri: Uri) {
+        initializeStorage(context)
         if (!beginLoading()) return
         val resolver = context.applicationContext.contentResolver
         viewModelScope.launch {
             try {
-                withContext(engineDispatcher) {
+                val preset = withContext(engineDispatcher) {
                     val input = resolver.openInputStream(uri) ?: error("Cannot open preset.")
-                    val json = input.use { JSONObject(it.bufferedReader().readText()) }
-                    val nam = json.optString("namFilePath").takeUnless { it.isBlank() || it == "null" }
-                    val wav = json.optString("wavFilePath").takeUnless { it.isBlank() || it == "null" }
-                    // Commit each path only after that model is accepted. If a later
-                    // load fails, the UI still describes the actual active models.
-                    if (nam != null) {
-                        check(backend.loadNamModel(nam)) { backend.lastError() }
-                        _uiState.update { it.copy(namFilePath = nam) }
-                    }
-                    if (wav != null) {
-                        check(backend.loadIrModel(wav)) { backend.lastError() }
-                        _uiState.update { it.copy(wavFilePath = wav) }
-                    }
-                    val inputGain = validGain(json.optDouble("inputGain", 0.5).toFloat())
-                    val outputGain = validGain(json.optDouble("outputGain", 0.5).toFloat())
-                    val ampBypass = json.optBoolean("isAmpBypassed", false)
-                    val cabBypass = json.optBoolean("isCabBypassed", false)
-                    backend.setInputGain(inputGain)
-                    backend.setOutputGain(outputGain)
-                    backend.setNamBypass(ampBypass)
-                    backend.setIrBypass(cabBypass)
-                    _uiState.update {
-                        it.copy(inputGain = inputGain, outputGain = outputGain,
-                            isAmpBypassed = ampBypass, isCabBypassed = cabBypass,
-                            isA2Full = json.optBoolean("isA2Full", false))
-                    }
+                    repository!!.readPreset(input)
                 }
+                applyPreset(preset)
+                sessionLoaded = true
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 _uiState.update { it.copy(errorMessage = e.message ?: "Preset import failed.") }
             } finally {
+                if (sessionLoaded) saveSession()
                 _uiState.update { it.copy(isBusy = false) }
             }
         }
     }
 
-    private fun copyUriToTempFile(context: Context, uri: Uri, suffix: String): File {
-        val file = File.createTempFile("a2rack_", suffix, context.cacheDir)
-        try {
-            val input = context.contentResolver.openInputStream(uri) ?: error("Cannot read selected file.")
-            input.use { source -> file.outputStream().use { source.copyTo(it) } }
-            return file
-        } catch (e: Exception) {
-            file.delete()
-            throw e
+    private fun loadNative(kind: AssetKind, path: String): Boolean =
+        if (kind == AssetKind.NAM) backend.loadNamModel(path) else backend.loadIrModel(path)
+
+    private data class LoadedSlot(val path: String? = null, val issue: String? = null)
+
+    private fun restoreSlot(ref: AssetRef?, kind: AssetKind): LoadedSlot {
+        if (ref == null) {
+            check(loadNative(kind, "")) { backend.lastError() }
+            return LoadedSlot()
+        }
+        val file = repository?.resolve(ref, kind)
+        if (file != null && loadNative(kind, file.absolutePath)) return LoadedSlot(file.absolutePath)
+        val issue = if (file == null) "Missing or damaged file: ${ref.name}. Choose a replacement."
+                    else "Cannot load ${ref.name}: ${backend.lastError()}"
+        // A missing/rejected target must not leave a previous preset's model active.
+        check(loadNative(kind, "")) { backend.lastError() }
+        return LoadedSlot(issue = issue)
+    }
+
+    private suspend fun applyPreset(preset: RackPreset) {
+        preset.validate()
+        val previousOutputGain = _uiState.value.outputGain
+        val loaded = withContext(engineDispatcher) {
+            backend.setOutputGain(0f)
+            var applied = false
+            try {
+                val nam = restoreSlot(preset.nam, AssetKind.NAM)
+                val ir = restoreSlot(preset.ir, AssetKind.IR)
+                backend.setInputGain(preset.inputGain)
+                backend.setNamBypass(preset.isAmpBypassed)
+                backend.setIrBypass(preset.isCabBypassed)
+                applied = true
+                nam to ir
+            } finally {
+                backend.setOutputGain(if (applied) preset.outputGain else previousOutputGain)
+            }
+        }
+        _uiState.update {
+            it.copy(inputGain = preset.inputGain, outputGain = preset.outputGain,
+                isAmpBypassed = preset.isAmpBypassed, isCabBypassed = preset.isCabBypassed,
+                isA2Full = preset.isA2Full, namAsset = preset.nam, irAsset = preset.ir,
+                namFilePath = loaded.first.path, wavFilePath = loaded.second.path,
+                namIssue = loaded.first.issue, irIssue = loaded.second.issue,
+                isEngineRunning = true,
+                errorMessage = if (loaded.first.issue != null || loaded.second.issue != null)
+                    "Some preset models are unavailable. Replace the files shown below." else null)
         }
     }
 }

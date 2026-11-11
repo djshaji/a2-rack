@@ -5,6 +5,7 @@ internal interface AudioBackend {
     fun stopEngine()
     fun isRunning(): Boolean
     fun lastError(): String
+    // An empty path unloads the slot at the next audio callback boundary.
     fun loadNamModel(path: String): Boolean
     fun loadIrModel(path: String): Boolean
     fun setInputGain(gain: Float)

@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    var showExportOptions by remember { mutableStateOf(false) }
 
     val namLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let { viewModel.loadNamFile(context, it) }
@@ -28,12 +29,36 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
         uri?.let { viewModel.loadWavFile(context, it) }
     }
 
-    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri: Uri? ->
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri: Uri? ->
         uri?.let { viewModel.exportPreset(context, it) }
+    }
+
+    val jsonExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri: Uri? ->
+        uri?.let { viewModel.exportPreset(context, it, portable = false) }
     }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri?.let { viewModel.importPreset(context, it) }
+    }
+
+    if (showExportOptions) {
+        AlertDialog(
+            onDismissRequest = { showExportOptions = false },
+            title = { Text("Export preset") },
+            text = { Text("Portable bundles include the amp and cabinet files. Settings-only JSON uses models already in this app's library.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showExportOptions = false
+                    exportLauncher.launch("preset.a2rack")
+                }) { Text("Portable bundle") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showExportOptions = false
+                    jsonExportLauncher.launch("preset.json")
+                }) { Text("Settings only") }
+            }
+        )
     }
 
     Scaffold(
@@ -72,13 +97,15 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                 GainControl(
                     label = "Input Gain",
                     value = state.inputGain,
-                    onValueChange = viewModel::updateInputGain
+                    onValueChange = viewModel::updateInputGain,
+                    enabled = !state.isBusy
                 )
 
                 GainControl(
                     label = "Output Gain",
                     value = state.outputGain,
-                    onValueChange = viewModel::updateOutputGain
+                    onValueChange = viewModel::updateOutputGain,
+                    enabled = !state.isBusy
                 )
 
                 HorizontalDivider()
@@ -90,7 +117,7 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("Amp Bypass", style = MaterialTheme.typography.titleMedium)
-                    Switch(checked = state.isAmpBypassed, onCheckedChange = viewModel::toggleAmpBypass)
+                    Switch(enabled = !state.isBusy, checked = state.isAmpBypassed, onCheckedChange = viewModel::toggleAmpBypass)
                 }
 
                 Row(
@@ -99,7 +126,7 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("Cab Bypass", style = MaterialTheme.typography.titleMedium)
-                    Switch(checked = state.isCabBypassed, onCheckedChange = viewModel::toggleCabBypass)
+                    Switch(enabled = !state.isBusy, checked = state.isCabBypassed, onCheckedChange = viewModel::toggleCabBypass)
                 }
 
                 HorizontalDivider()
@@ -114,7 +141,7 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Lite")
                         Spacer(modifier = Modifier.width(8.dp))
-                        Switch(checked = state.isA2Full, onCheckedChange = viewModel::toggleA2Mode)
+                        Switch(enabled = !state.isBusy, checked = state.isA2Full, onCheckedChange = viewModel::toggleA2Mode)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Full")
                     }
@@ -125,14 +152,16 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                 // File Pickers
                 FilePickerItem(
                     label = "Neural Amp Model (.nam)",
-                    filePath = state.namFilePath,
+                    fileName = state.namAsset?.name,
+                    issue = state.namIssue,
                     onPickFile = { namLauncher.launch("*/*") },
                     enabled = state.isEngineRunning && !state.isBusy
                 )
 
                 FilePickerItem(
                     label = "Cab Impulse Response (.wav)",
-                    filePath = state.wavFilePath,
+                    fileName = state.irAsset?.name,
+                    issue = state.irIssue,
                     onPickFile = { wavLauncher.launch("audio/wav") },
                     enabled = state.isEngineRunning && !state.isBusy
                 )
@@ -144,10 +173,10 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
-                    Button(enabled = state.isEngineRunning && !state.isBusy, onClick = { importLauncher.launch(arrayOf("application/json", "*/*")) }) {
+                    Button(enabled = state.isEngineRunning && !state.isBusy, onClick = { importLauncher.launch(arrayOf("*/*")) }) {
                         Text("Import Preset")
                     }
-                    Button(enabled = !state.isBusy, onClick = { exportLauncher.launch("preset.json") }) {
+                    Button(enabled = !state.isBusy, onClick = { showExportOptions = true }) {
                         Text("Export Preset")
                     }
                 }
@@ -157,7 +186,7 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
 }
 
 @Composable
-fun GainControl(label: String, value: Float, onValueChange: (Float) -> Unit) {
+fun GainControl(label: String, value: Float, onValueChange: (Float) -> Unit, enabled: Boolean = true) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -167,6 +196,7 @@ fun GainControl(label: String, value: Float, onValueChange: (Float) -> Unit) {
             Text(String.format("%.2f", value))
         }
         Slider(
+            enabled = enabled,
             value = value,
             onValueChange = onValueChange,
             valueRange = 0f..1f
@@ -175,7 +205,7 @@ fun GainControl(label: String, value: Float, onValueChange: (Float) -> Unit) {
 }
 
 @Composable
-fun FilePickerItem(label: String, filePath: String?, onPickFile: () -> Unit, enabled: Boolean = true) {
+fun FilePickerItem(label: String, fileName: String?, onPickFile: () -> Unit, enabled: Boolean = true, issue: String? = null) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
@@ -188,13 +218,14 @@ fun FilePickerItem(label: String, filePath: String?, onPickFile: () -> Unit, ena
         ) {
             Text(label, style = MaterialTheme.typography.titleMedium)
             Text(
-                text = filePath?.substringAfterLast('/') ?: "No file selected",
+                text = fileName ?: "No file selected",
                 style = MaterialTheme.typography.bodyMedium,
-                color = if (filePath == null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (fileName == null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Start
             )
+            issue?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Button(onClick = onPickFile, enabled = enabled, modifier = Modifier.align(Alignment.End)) {
-                Text("Select File")
+                Text(if (issue == null) "Select File" else "Replace File")
             }
         }
     }
