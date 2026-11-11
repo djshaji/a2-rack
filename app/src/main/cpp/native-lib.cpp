@@ -60,3 +60,17 @@ extern "C" JNIEXPORT void JNICALL
 Java_org_acoustixaudio_a2rack_AudioEngine_setIrBypass(JNIEnv*, jobject, jboolean bypass) {
     engine.setIrBypass(bypass);
 }
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_acoustixaudio_a2rack_AudioEngine_setMuted(JNIEnv*, jobject, jboolean muted) {
+    engine.setMuted(muted);
+}
+extern "C" JNIEXPORT void JNICALL
+Java_org_acoustixaudio_a2rack_AudioEngine_setDeviceIds(JNIEnv*, jobject, jint input, jint output) {
+    std::lock_guard<std::mutex> lock(controlMutex);
+    engine.setDeviceIds(input, output);
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_acoustixaudio_a2rack_AudioEngine_isRecoverableError(JNIEnv*, jobject) {
+    return engine.isRecoverableError();
+}

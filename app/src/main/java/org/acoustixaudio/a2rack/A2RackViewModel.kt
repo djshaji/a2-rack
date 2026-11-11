@@ -13,6 +13,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -30,7 +33,11 @@ data class A2RackState(
     val namIssue: String? = null,
     val irIssue: String? = null,
     val isEngineRunning: Boolean = false,
+    val audioRequested: Boolean = true,
     val isBusy: Boolean = false,
+    val isTransitioning: Boolean = false,
+    val audioStatus: String = "Audio stopped",
+    val routeLabel: String = "System audio",
     val errorMessage: String? = null
 ) {
     fun preset() = RackPreset(inputGain = inputGain, outputGain = outputGain,
@@ -47,9 +54,23 @@ class A2RackViewModel internal constructor(
 
     private val _uiState = MutableStateFlow(A2RackState())
     val uiState = _uiState.asStateFlow()
-    private var monitor: Job? = null
     private var saveJob: Job? = null
     private var sessionLoaded = false
+    private val operationMutex = Mutex()
+    private val visible = MutableStateFlow(false)
+    private val session = AudioSessionController(
+        backend, engineDispatcher, viewModelScope, operationMutex,
+        restore = { restoreSession() },
+        flush = { if (sessionLoaded) saveSession() },
+        changed = { next ->
+            _uiState.update {
+                it.copy(isEngineRunning = next.running, audioRequested = next.requested,
+                    isTransitioning = next.transitioning,
+                    audioStatus = next.status, routeLabel = next.route,
+                    errorMessage = next.error ?: if (next.transitioning) null else it.errorMessage)
+            }
+        }
+    )
 
     fun initializeStorage(context: Context) {
         if (repository == null) {
@@ -58,60 +79,41 @@ class A2RackViewModel internal constructor(
         }
     }
 
-    fun startAudio() {
-        if (_uiState.value.isBusy || _uiState.value.isEngineRunning) return
-        saveJob?.cancel()
-        _uiState.update { it.copy(isBusy = true, errorMessage = null) }
-        viewModelScope.launch {
-            try {
-                val preset = withContext(engineDispatcher) {
-                    // Avoid playing a dry or partially restored chain during startup.
-                    backend.setOutputGain(0f)
-                    check(backend.startEngine()) { backend.lastError().ifBlank { "Cannot start audio." } }
-                    if (!sessionLoaded) repository?.readSession() ?: _uiState.value.preset()
-                    else _uiState.value.preset()
-                }
-                sessionLoaded = true
-                applyPreset(preset)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                val running = withContext(engineDispatcher) {
-                    backend.setOutputGain(_uiState.value.outputGain)
-                    backend.isRunning()
-                }
-                // A bad saved document must not prevent subsequent edits from being saved.
-                if (running) sessionLoaded = true
-                _uiState.update { it.copy(isEngineRunning = running, errorMessage = e.message ?: "Session restoration failed.") }
-            } finally {
-                _uiState.update { it.copy(isBusy = false) }
-                if (_uiState.value.isEngineRunning) monitorEngine()
-            }
-        }
+    fun startAudio() = session.start()
+    fun stopAudio() = session.stop()
+    fun onRouteChanged(route: AudioRoute) = session.route(route)
+    fun onAudioBecomingNoisy() = session.becomingNoisy()
+
+    fun onForegroundChanged(isVisible: Boolean, permissionGranted: Boolean) {
+        visible.value = isVisible
+        session.foreground(isVisible, permissionGranted)
     }
 
+    fun permissionGranted() = session.permission(true)
     fun permissionDenied() {
+        session.permission(false)
         _uiState.update { it.copy(errorMessage = "Microphone permission is required to start audio.") }
     }
 
-    private fun monitorEngine() {
-        monitor?.cancel()
-        monitor = viewModelScope.launch {
-            while (true) {
-                delay(500)
-                val error = withContext(engineDispatcher) {
-                    if (backend.isRunning()) null
-                    else backend.lastError().ifBlank { "Audio stopped. Restart audio to continue." }
+    private suspend fun restoreSession() {
+        var restoreError: String? = null
+        val preset = withContext(engineDispatcher) {
+            if (!sessionLoaded) {
+                try {
+                    repository?.readSession() ?: _uiState.value.preset()
+                } catch (e: Exception) {
+                    restoreError = "Saved session could not be read: ${e.message}"
+                    _uiState.value.preset()
                 }
-                if (error != null) {
-                    _uiState.update { it.copy(isEngineRunning = false, errorMessage = error) }
-                    break
-                }
-            }
+            } else _uiState.value.preset()
         }
+        applyPreset(preset)
+        sessionLoaded = true
+        restoreError?.let { error -> _uiState.update { it.copy(errorMessage = error) } }
     }
 
     override fun onCleared() {
+        session.muteForShutdown()
         saveJob?.cancel()
         val preset = _uiState.value.preset()
         val save = sessionLoaded
@@ -129,7 +131,7 @@ class A2RackViewModel internal constructor(
     private fun validGain(gain: Float) = if (gain.isFinite()) gain.coerceIn(0f, 1f) else 0f
 
     fun updateInputGain(gain: Float) {
-        if (_uiState.value.isBusy) return
+        if (_uiState.value.isBusy || _uiState.value.isTransitioning) return
         val value = validGain(gain)
         _uiState.update { it.copy(inputGain = value) }
         backend.setInputGain(value)
@@ -137,7 +139,7 @@ class A2RackViewModel internal constructor(
     }
 
     fun updateOutputGain(gain: Float) {
-        if (_uiState.value.isBusy) return
+        if (_uiState.value.isBusy || _uiState.value.isTransitioning) return
         val value = validGain(gain)
         _uiState.update { it.copy(outputGain = value) }
         backend.setOutputGain(value)
@@ -145,21 +147,21 @@ class A2RackViewModel internal constructor(
     }
 
     fun toggleAmpBypass(bypassed: Boolean) {
-        if (_uiState.value.isBusy) return
+        if (_uiState.value.isBusy || _uiState.value.isTransitioning) return
         _uiState.update { it.copy(isAmpBypassed = bypassed) }
         backend.setNamBypass(bypassed)
         scheduleSave()
     }
 
     fun toggleCabBypass(bypassed: Boolean) {
-        if (_uiState.value.isBusy) return
+        if (_uiState.value.isBusy || _uiState.value.isTransitioning) return
         _uiState.update { it.copy(isCabBypassed = bypassed) }
         backend.setIrBypass(bypassed)
         scheduleSave()
     }
 
     fun toggleA2Mode(isFull: Boolean) {
-        if (_uiState.value.isBusy) return
+        if (_uiState.value.isBusy || _uiState.value.isTransitioning) return
         _uiState.update { it.copy(isA2Full = isFull) }
         scheduleSave()
     }
@@ -189,39 +191,43 @@ class A2RackViewModel internal constructor(
 
     private fun loadFile(context: Context, uri: Uri, kind: AssetKind) {
         initializeStorage(context)
-        if (!beginLoading()) return
         val resolver = context.applicationContext.contentResolver
         viewModelScope.launch {
-            try {
-                val loaded = withContext(engineDispatcher) {
-                    val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
-                        val column = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        if (column >= 0 && it.moveToFirst()) it.getString(column) else null
-                    } ?: "model.${kind.extension}"
-                    val input = resolver.openInputStream(uri) ?: error("Cannot read selected file.")
-                    val ref = repository!!.importAsset(input, name, kind)
-                    val file = repository!!.resolve(ref, kind) ?: error("Imported model is unavailable.")
-                    check(loadNative(kind, file.absolutePath)) { backend.lastError().ifBlank { "Cannot load this model." } }
-                    ref to file.absolutePath
+            visible.first { it }
+            uiState.first { !it.isTransitioning }
+            operationMutex.withLock {
+                if (!beginLoading()) return@withLock
+                try {
+                    val loaded = withContext(engineDispatcher) {
+                        val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                            val column = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            if (column >= 0 && it.moveToFirst()) it.getString(column) else null
+                        } ?: "model.${kind.extension}"
+                        val input = resolver.openInputStream(uri) ?: error("Cannot read selected file.")
+                        val ref = repository!!.importAsset(input, name, kind)
+                        val file = repository!!.resolve(ref, kind) ?: error("Imported model is unavailable.")
+                        check(loadNative(kind, file.absolutePath)) { backend.lastError().ifBlank { "Cannot load this model." } }
+                        ref to file.absolutePath
+                    }
+                    _uiState.update {
+                        if (kind == AssetKind.NAM) it.copy(namAsset = loaded.first, namFilePath = loaded.second, namIssue = null)
+                        else it.copy(irAsset = loaded.first, wavFilePath = loaded.second, irIssue = null)
+                    }
+                    sessionLoaded = true
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _uiState.update { it.copy(errorMessage = e.message ?: "Model loading failed.") }
+                } finally {
+                    if (sessionLoaded) saveSession()
+                    _uiState.update { it.copy(isBusy = false) }
                 }
-                _uiState.update {
-                    if (kind == AssetKind.NAM) it.copy(namAsset = loaded.first, namFilePath = loaded.second, namIssue = null)
-                    else it.copy(irAsset = loaded.first, wavFilePath = loaded.second, irIssue = null)
-                }
-                sessionLoaded = true
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _uiState.update { it.copy(errorMessage = e.message ?: "Model loading failed.") }
-            } finally {
-                if (sessionLoaded) saveSession()
-                _uiState.update { it.copy(isBusy = false) }
             }
         }
     }
 
     private fun beginLoading(): Boolean {
-        if (_uiState.value.isBusy) return false
+        if (_uiState.value.isBusy || _uiState.value.isTransitioning) return false
         if (!_uiState.value.isEngineRunning) {
             _uiState.update { it.copy(errorMessage = "Start audio before loading models or presets.") }
             return false
@@ -233,46 +239,54 @@ class A2RackViewModel internal constructor(
 
     fun exportPreset(context: Context, uri: Uri, portable: Boolean = true) {
         initializeStorage(context)
-        if (_uiState.value.isBusy) return
-        val preset = _uiState.value.preset()
+        // Document results may arrive while foreground restoration is running.
         val resolver = context.applicationContext.contentResolver
-        _uiState.update { it.copy(isBusy = true, errorMessage = null) }
         viewModelScope.launch {
-            try {
-                withContext(engineDispatcher) {
-                    val output = resolver.openOutputStream(uri) ?: error("Cannot open preset destination.")
-                    output.use {
-                        if (portable) repository!!.writeBundle(preset, it)
-                        else repository!!.writeJson(preset, it)
+            visible.first { it }
+            uiState.first { !it.isTransitioning }
+            operationMutex.withLock {
+                val preset = _uiState.value.preset()
+                _uiState.update { it.copy(isBusy = true, errorMessage = null) }
+                try {
+                    withContext(engineDispatcher) {
+                        val output = resolver.openOutputStream(uri) ?: error("Cannot open preset destination.")
+                        output.use {
+                            if (portable) repository!!.writeBundle(preset, it)
+                            else repository!!.writeJson(preset, it)
+                        }
                     }
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _uiState.update { it.copy(errorMessage = e.message ?: "Preset export failed.") }
-            } finally { _uiState.update { it.copy(isBusy = false) } }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _uiState.update { it.copy(errorMessage = e.message ?: "Preset export failed.") }
+                } finally { _uiState.update { it.copy(isBusy = false) } }
+            }
         }
     }
 
     fun importPreset(context: Context, uri: Uri) {
         initializeStorage(context)
-        if (!beginLoading()) return
         val resolver = context.applicationContext.contentResolver
         viewModelScope.launch {
-            try {
-                val preset = withContext(engineDispatcher) {
-                    val input = resolver.openInputStream(uri) ?: error("Cannot open preset.")
-                    repository!!.readPreset(input)
+            visible.first { it }
+            uiState.first { !it.isTransitioning }
+            operationMutex.withLock {
+                if (!beginLoading()) return@withLock
+                try {
+                    val preset = withContext(engineDispatcher) {
+                        val input = resolver.openInputStream(uri) ?: error("Cannot open preset.")
+                        repository!!.readPreset(input)
+                    }
+                    applyPreset(preset)
+                    sessionLoaded = true
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _uiState.update { it.copy(errorMessage = e.message ?: "Preset import failed.") }
+                } finally {
+                    if (sessionLoaded) saveSession()
+                    _uiState.update { it.copy(isBusy = false) }
                 }
-                applyPreset(preset)
-                sessionLoaded = true
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _uiState.update { it.copy(errorMessage = e.message ?: "Preset import failed.") }
-            } finally {
-                if (sessionLoaded) saveSession()
-                _uiState.update { it.copy(isBusy = false) }
             }
         }
     }
@@ -320,7 +334,6 @@ class A2RackViewModel internal constructor(
                 isA2Full = preset.isA2Full, namAsset = preset.nam, irAsset = preset.ir,
                 namFilePath = loaded.first.path, wavFilePath = loaded.second.path,
                 namIssue = loaded.first.issue, irIssue = loaded.second.issue,
-                isEngineRunning = true,
                 errorMessage = if (loaded.first.issue != null || loaded.second.issue != null)
                     "Some preset models are unavailable. Replace the files shown below." else null)
         }

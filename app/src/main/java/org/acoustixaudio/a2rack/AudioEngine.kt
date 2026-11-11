@@ -3,6 +3,9 @@ package org.acoustixaudio.a2rack
 internal interface AudioBackend {
     fun startEngine(): Boolean
     fun stopEngine()
+    fun setMuted(muted: Boolean)
+    fun setDeviceIds(inputId: Int, outputId: Int)
+    fun isRecoverableError(): Boolean
     fun isRunning(): Boolean
     fun lastError(): String
     // An empty path unloads the slot at the next audio callback boundary.
@@ -24,6 +27,9 @@ internal object AudioEngine : AudioBackend {
 
     external override fun startEngine(): Boolean
     external override fun stopEngine()
+    external override fun setMuted(muted: Boolean)
+    external override fun setDeviceIds(inputId: Int, outputId: Int)
+    external override fun isRecoverableError(): Boolean
     external override fun isRunning(): Boolean
     external override fun lastError(): String
 

@@ -20,12 +20,13 @@ import org.acoustixaudio.a2rack.ui.theme.A2RackTheme
 
 class MainActivity : ComponentActivity() {
     private val viewModel: A2RackViewModel by viewModels()
+    private lateinit var routeMonitor: AudioRouteMonitor
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (isGranted) {
-            viewModel.startAudio()
+            viewModel.permissionGranted()
         } else {
             viewModel.permissionDenied()
         }
@@ -35,11 +36,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         viewModel.initializeStorage(applicationContext)
+        routeMonitor = AudioRouteMonitor(this, viewModel::onRouteChanged, viewModel::onAudioBecomingNoisy)
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-        } else {
-            viewModel.startAudio()
         }
 
         setContent {
@@ -52,13 +52,7 @@ class MainActivity : ComponentActivity() {
                         entryProvider = { route ->
                             when (route) {
                                 "Home" -> NavEntry(route) {
-                                    MainScreen(viewModel = viewModel, onStartAudio = {
-                                        if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                                            viewModel.startAudio()
-                                        } else {
-                                            requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                        }
-                                    })
+                                    MainScreen(viewModel = viewModel, onStartAudio = ::requestAudioStart)
                                 }
                                 else -> NavEntry(route) { }
                             }
@@ -68,4 +62,25 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    override fun onStart() {
+        super.onStart()
+        routeMonitor.start()
+        viewModel.onForegroundChanged(true, hasMicrophonePermission())
+    }
+
+    override fun onStop() {
+        viewModel.onForegroundChanged(false, hasMicrophonePermission())
+        routeMonitor.stop()
+        super.onStop()
+    }
+
+    private fun requestAudioStart() {
+        viewModel.startAudio()
+        if (hasMicrophonePermission()) viewModel.permissionGranted()
+        else requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+
+    private fun hasMicrophonePermission() =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
 }

@@ -7,7 +7,7 @@ A prototype Android amp and cabinet processor built with Kotlin, Jetpack Compose
 | Area | Status |
 | --- | --- |
 | Compose interface | Input/output gain, amp/cab bypass, model selection, and preset controls implemented |
-| Audio engine | Fixed-size processing buffers, atomic controls, and callback-boundary model swaps implemented |
+| Audio engine | Fixed buffers, atomic controls/muting, callback-boundary model swaps, and foreground/route recovery implemented |
 | NAM models | Worker-thread loading, mono/rate validation, and stream-specific initialization implemented |
 | Cabinet responses | WAV validation and buffer warm-up implemented before activation |
 | Lite/Full mode | Switch updates UI state only; DSP behavior pending |
@@ -33,7 +33,7 @@ Install the SDK and native build tools requested by Gradle, and ensure the nativ
 ./gradlew :app:testDebugUnitTest
 ```
 
-Both tasks passed after the persistent-storage and preset changes, with 20 JVM tests passing. Device tests and audio latency measurements are still required to validate real-time behavior.
+The debug build passes after lifecycle/route integration, with all 33 JVM tests passing. Device tests and audio latency measurements are still required to validate real-time behavior.
 
 ## Using the prototype
 
@@ -43,9 +43,19 @@ Both tasks passed after the persistent-storage and preset changes, with 20 JVM t
 4. Use Import Preset to open settings JSON or a portable preset bundle.
 5. Use Export Preset and choose Portable bundle to include model files, or Settings only for JSON references to the local library.
 
-The engine attempts to start after microphone permission is granted. Startup and stream errors appear in the UI; use Start Audio to retry. After a successful start, the app restores the last session's models and controls against the new stream's sample rate. Output is muted while the model chain is restored.
+The engine starts when the activity is visible and microphone permission is granted. Leaving the activity, including opening a document picker, immediately mutes output and queues stream shutdown. Returning restores the previously running session; picker results wait for restoration before applying files.
+
+Stop Audio mutes immediately and disables automatic restart, including while waiting for an unplugged device. This choice survives activity recreation through the ViewModel. Start Audio explicitly re-enables playback. Output remains muted while streams reopen and the session is restored against the negotiated sample rate.
 
 Loading failures preserve the previous active model. Only mono NAM models are supported; models with a known incompatible sample rate are rejected unless they support arbitrary processing rates. The Lite/Full switch currently has no effect on audio processing.
+
+## Audio routes and recovery
+
+The app prefers connected USB audio, then wired headphones/headsets, then the device speaker and microphone. It pins AAudio streams to the selected device IDs and refuses a mismatched route. The current route and recovery status appear above the controls.
+
+Disconnect errors silence the native callback immediately. Device-list and audio-becoming-noisy callbacks also mute independently of model-loading work. After external audio is removed, the app waits for an external device rather than automatically switching to the speaker. Reconnecting reopens streams and reloads models. To intentionally use the speaker after unplugging, press Stop Audio, then Start Audio.
+
+Route events are debounced for 400 ms. Native disconnect faults can trigger up to two recovery attempts per route/foreground session; startup or unrecoverable processing failures remain stopped with an error and manual retry. Older streams' error callbacks are tagged so they cannot invalidate a newer stream.
 
 ## Model library and presets
 
@@ -68,6 +78,8 @@ Legacy path-based JSON presets can migrate generated files that still exist in t
 - [A2RackViewModel.kt](app/src/main/java/org/acoustixaudio/a2rack/A2RackViewModel.kt): UI state, model loading, and session restoration/autosave.
 - [PresetRepository.kt](app/src/main/java/org/acoustixaudio/a2rack/PresetRepository.kt): content-addressed model storage, versioned presets, and portable bundles.
 - [AudioEngine.kt](app/src/main/java/org/acoustixaudio/a2rack/AudioEngine.kt): Kotlin native API.
+- [AudioSessionController.kt](app/src/main/java/org/acoustixaudio/a2rack/AudioSessionController.kt): foreground/permission policy, Start/Stop intent, and serialized recovery.
+- [AudioRouteMonitor.kt](app/src/main/java/org/acoustixaudio/a2rack/AudioRouteMonitor.kt): device selection and Android route/noisy callbacks.
 - [native-lib.cpp](app/src/main/cpp/native-lib.cpp): JNI bridge and engine ownership.
 - [AudioEngine.cpp](app/src/main/cpp/AudioEngine.cpp): Oboe streams and DSP processing.
 - [CMakeLists.txt](app/src/main/cpp/CMakeLists.txt): native dependency integration.
@@ -75,9 +87,19 @@ Legacy path-based JSON presets can migrate generated files that still exist in t
 ## Known gaps and next steps
 
 1. **Validate native behavior on devices.** Measure latency and dropouts during control changes and model replacement. Verify callback allocation behavior across supported NAM architectures, invalid model/IR files, and sample-rate rejection.
-2. **Complete lifecycle policy.** Define background behavior and automatic route/disconnection recovery. Current handling reports a stopped stream and provides manual restart.
+2. **Verify lifecycle and routes on hardware.** Exercise USB/headphone unplug/reconnect, route sample-rate changes, permission revocation, and backgrounding during model loading. No running Android device was available during implementation.
 3. **Extend library management.** Add a model browser and explicit removal of unused assets. Model slots are restored sequentially while output is muted; the native engine does not provide a transactional two-model swap.
 4. **Implement Lite/Full processing.** Define each mode's behavior and connect the switch to the native engine.
 5. **Extend device coverage.** Verify document-provider interactions, replacement pickers, native handoff races, real microphone permission flows, and physical-device recovery.
+
+## Physical-device verification
+
+1. Grant microphone permission, load a NAM/IR pair, and confirm the displayed route.
+2. Press Stop Audio; reconnect devices and rotate or background/foreground the app. Confirm it stays stopped until Start Audio is pressed.
+3. While running through headphones or USB, unplug the device. Confirm immediate silence and a reconnect status, with no speaker fallback. Reconnect and confirm model restoration.
+4. Send the app to the background during startup/model loading; confirm silence, microphone release after queued work completes, and restoration on return.
+5. Open and return from each file picker; confirm the selected file is applied after foreground restoration.
+6. Change between interfaces with different sample rates. Confirm incompatible models are named with errors rather than processed at the wrong rate.
+7. Measure latency/dropouts and inspect logs for crashes during repeated changes.
 
 This progress summary is based on the current source review. No `plan.md` was available in the project during that review.

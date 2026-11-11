@@ -9,21 +9,21 @@ AudioEngine::~AudioEngine() { stop(); }
 
 std::string AudioEngine::lastError() const {
     if (mProcessingFailed.load()) return "Audio processing failed. Restart the engine and reload the model.";
-    const auto error = mStreamError.load();
+    const auto error = streamError();
     if (error != oboe::Result::OK)
         return std::string("Audio stream stopped: ") + oboe::convertToText(error);
     return mLastError;
 }
 
 bool AudioEngine::start() {
-    if (mRunning.load()) return true;
+    if (isRunning()) return true;
     closeStreams();
     // A fresh stream may negotiate a different sample rate. Never reuse DSP
     // configured for an old stream.
     mNamModel.reset();
     mIrModel.reset();
     mLastError.clear();
-    mStreamError.store(oboe::Result::OK);
+    mStreamState.store(static_cast<uint64_t>(++mStreamEpoch) << 32);
     mProcessingFailed.store(false);
     if (!openPlaybackStream() || !openRecordStream()) {
         closeStreams();
@@ -51,19 +51,22 @@ void AudioEngine::stop() {
 bool AudioEngine::openPlaybackStream() {
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Output);
+    builder.setAudioApi(oboe::AudioApi::AAudio);
+    builder.setDeviceId(mOutputDeviceId);
     builder.setPerformanceMode(oboe::PerformanceMode::LowLatency);
     builder.setSharingMode(oboe::SharingMode::Exclusive);
     builder.setFormat(oboe::AudioFormat::Float);
     builder.setChannelCount(2);
     builder.setFramesPerDataCallback(kBlockSize);
     builder.setDataCallback(this);
-    builder.setErrorCallback(this);
+    builder.setErrorCallback(std::make_shared<StreamErrors>(*this, streamToken()));
     const auto result = builder.openStream(mPlayStream);
     if (result != oboe::Result::OK) {
         mLastError = std::string("Cannot open audio output: ") + oboe::convertToText(result);
         return false;
     }
-    if (mPlayStream->getFormat() != oboe::AudioFormat::Float ||
+    if ((mOutputDeviceId != 0 && mPlayStream->getDeviceId() != mOutputDeviceId) ||
+        mPlayStream->getFormat() != oboe::AudioFormat::Float ||
         mPlayStream->getChannelCount() != 2) {
         mLastError = "Audio output must support stereo floating-point samples.";
         return false;
@@ -74,18 +77,21 @@ bool AudioEngine::openPlaybackStream() {
 bool AudioEngine::openRecordStream() {
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Input);
+    builder.setAudioApi(oboe::AudioApi::AAudio);
+    builder.setDeviceId(mInputDeviceId);
     builder.setPerformanceMode(oboe::PerformanceMode::LowLatency);
     builder.setSharingMode(oboe::SharingMode::Exclusive);
     builder.setFormat(oboe::AudioFormat::Float);
     builder.setChannelCount(2);
     builder.setSampleRate(mPlayStream->getSampleRate());
-    builder.setErrorCallback(this);
+    builder.setErrorCallback(std::make_shared<StreamErrors>(*this, streamToken()));
     const auto result = builder.openStream(mRecordStream);
     if (result != oboe::Result::OK) {
         mLastError = std::string("Cannot open microphone: ") + oboe::convertToText(result);
         return false;
     }
-    if (mRecordStream->getFormat() != oboe::AudioFormat::Float ||
+    if ((mInputDeviceId != 0 && mRecordStream->getDeviceId() != mInputDeviceId) ||
+        mRecordStream->getFormat() != oboe::AudioFormat::Float ||
         mRecordStream->getChannelCount() != 2 ||
         mRecordStream->getSampleRate() != mPlayStream->getSampleRate()) {
         mLastError = "Audio input and output formats do not match.";
@@ -96,6 +102,9 @@ bool AudioEngine::openRecordStream() {
 
 void AudioEngine::closeStreams() {
     mRunning.store(false);
+    // Invalidate old callbacks before touching the stream pointers.
+    mStreamState.store((static_cast<uint64_t>(++mStreamEpoch) << 32) |
+                       static_cast<uint32_t>(streamError()));
     // Closing output first joins its callback before the input pointer or DSP
     // objects can be changed by a control operation.
     if (mPlayStream) {
@@ -114,7 +123,7 @@ bool AudioEngine::publish(ModelUpdate& update) {
     mPending.store(&update);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     while (!update.applied.load()) {
-        if (!mRunning.load() || std::chrono::steady_clock::now() >= deadline) {
+        if (!isRunning() || std::chrono::steady_clock::now() >= deadline) {
             auto* expected = &update;
             if (mPending.compare_exchange_strong(expected, nullptr)) {
                 mLastError = "The audio callback is unavailable. Restart audio and try again.";
@@ -139,7 +148,7 @@ void AudioEngine::applyPendingUpdate() {
 
 bool AudioEngine::loadNamModel(const std::string& path) {
     try {
-        if (!mRunning.load()) throw std::runtime_error("Start audio before loading an amp model.");
+        if (!isRunning()) throw std::runtime_error("Start audio before loading an amp model.");
         ModelUpdate update;
         update.isNam = true;
         // Empty paths explicitly unload a slot through the same safe handoff.
@@ -168,7 +177,7 @@ bool AudioEngine::loadNamModel(const std::string& path) {
 
 bool AudioEngine::loadIrModel(const std::string& path) {
     try {
-        if (!mRunning.load()) throw std::runtime_error("Start audio before loading a cabinet response.");
+        if (!isRunning()) throw std::runtime_error("Start audio before loading a cabinet response.");
         if (path.empty()) {
             ModelUpdate update;
             update.isNam = false;
@@ -213,7 +222,7 @@ oboe::DataCallbackResult AudioEngine::onAudioReady(
     auto* output = static_cast<float*>(audioData);
     const int channels = stream->getChannelCount();
     std::fill_n(output, numFrames * channels, 0.0f);
-    if (!mRunning.load()) return oboe::DataCallbackResult::Stop;
+    if (!isRunning()) return oboe::DataCallbackResult::Stop;
     // Oboe's callback adapter supplies this exact quantum. Keeping it fixed
     // also prevents shape-dependent reallocations in upstream NAM processors.
     if (numFrames != kBlockSize || channels != 2) {
@@ -230,7 +239,7 @@ oboe::DataCallbackResult AudioEngine::onAudioReady(
         const auto result = mRecordStream->read(output, kBlockSize, 0);
         if (result != oboe::Result::OK) {
             std::fill_n(output, numFrames * channels, 0.0f);
-            mStreamError.store(result.error());
+            reportError(streamToken(), result.error());
             mRunning.store(false);
             return oboe::DataCallbackResult::Stop;
         }
@@ -263,10 +272,6 @@ oboe::DataCallbackResult AudioEngine::onAudioReady(
         mRunning.store(false);
         return oboe::DataCallbackResult::Stop;
     }
+    if (mMuted.load() || !isRunning()) std::fill_n(output, numFrames * channels, 0.0f);
     return oboe::DataCallbackResult::Continue;
-}
-
-void AudioEngine::onErrorAfterClose(oboe::AudioStream*, oboe::Result error) {
-    mStreamError.store(error);
-    mRunning.store(false);
 }

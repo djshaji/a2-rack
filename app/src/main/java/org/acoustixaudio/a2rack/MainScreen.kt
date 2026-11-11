@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
     val state by viewModel.uiState.collectAsState()
+    val busy = state.isBusy || state.isTransitioning
     val context = LocalContext.current
     var showExportOptions by remember { mutableStateOf(false) }
 
@@ -80,13 +81,17 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Text(if (state.isEngineRunning) "Audio running" else "Audio stopped")
-                if (!state.isEngineRunning) {
-                    Button(onClick = onStartAudio, enabled = !state.isBusy) {
+                Text(state.audioStatus)
+                Text(state.routeLabel, style = MaterialTheme.typography.bodyMedium)
+                if (state.audioRequested) {
+                    Button(onClick = viewModel::stopAudio) { Text("Stop Audio") }
+                }
+                if (!state.isEngineRunning && !state.isTransitioning) {
+                    Button(onClick = onStartAudio, enabled = !busy) {
                         Text("Start Audio")
                     }
                 }
-                if (state.isBusy) {
+                if (busy) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
                 state.errorMessage?.let { message ->
@@ -98,14 +103,14 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                     label = "Input Gain",
                     value = state.inputGain,
                     onValueChange = viewModel::updateInputGain,
-                    enabled = !state.isBusy
+                    enabled = !busy
                 )
 
                 GainControl(
                     label = "Output Gain",
                     value = state.outputGain,
                     onValueChange = viewModel::updateOutputGain,
-                    enabled = !state.isBusy
+                    enabled = !busy
                 )
 
                 HorizontalDivider()
@@ -117,7 +122,7 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("Amp Bypass", style = MaterialTheme.typography.titleMedium)
-                    Switch(enabled = !state.isBusy, checked = state.isAmpBypassed, onCheckedChange = viewModel::toggleAmpBypass)
+                    Switch(enabled = !busy, checked = state.isAmpBypassed, onCheckedChange = viewModel::toggleAmpBypass)
                 }
 
                 Row(
@@ -126,7 +131,7 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("Cab Bypass", style = MaterialTheme.typography.titleMedium)
-                    Switch(enabled = !state.isBusy, checked = state.isCabBypassed, onCheckedChange = viewModel::toggleCabBypass)
+                    Switch(enabled = !busy, checked = state.isCabBypassed, onCheckedChange = viewModel::toggleCabBypass)
                 }
 
                 HorizontalDivider()
@@ -141,7 +146,7 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Lite")
                         Spacer(modifier = Modifier.width(8.dp))
-                        Switch(enabled = !state.isBusy, checked = state.isA2Full, onCheckedChange = viewModel::toggleA2Mode)
+                        Switch(enabled = !busy, checked = state.isA2Full, onCheckedChange = viewModel::toggleA2Mode)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Full")
                     }
@@ -155,7 +160,7 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                     fileName = state.namAsset?.name,
                     issue = state.namIssue,
                     onPickFile = { namLauncher.launch("*/*") },
-                    enabled = state.isEngineRunning && !state.isBusy
+                    enabled = state.isEngineRunning && !busy
                 )
 
                 FilePickerItem(
@@ -163,7 +168,7 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                     fileName = state.irAsset?.name,
                     issue = state.irIssue,
                     onPickFile = { wavLauncher.launch("audio/wav") },
-                    enabled = state.isEngineRunning && !state.isBusy
+                    enabled = state.isEngineRunning && !busy
                 )
 
                 HorizontalDivider()
@@ -173,10 +178,10 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
-                    Button(enabled = state.isEngineRunning && !state.isBusy, onClick = { importLauncher.launch(arrayOf("*/*")) }) {
+                    Button(enabled = state.isEngineRunning && !busy, onClick = { importLauncher.launch(arrayOf("*/*")) }) {
                         Text("Import Preset")
                     }
-                    Button(enabled = !state.isBusy, onClick = { showExportOptions = true }) {
+                    Button(enabled = !busy, onClick = { showExportOptions = true }) {
                         Text("Export Preset")
                     }
                 }

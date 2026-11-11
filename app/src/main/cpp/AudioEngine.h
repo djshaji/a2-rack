@@ -9,7 +9,7 @@
 
 // All control operations are serialized by the JNI bridge. Only the callback
 // touches active DSP objects while streams are running.
-class AudioEngine : public oboe::AudioStreamDataCallback, public oboe::AudioStreamErrorCallback {
+class AudioEngine : public oboe::AudioStreamDataCallback {
 public:
     AudioEngine() = default;
     ~AudioEngine();
@@ -21,13 +21,39 @@ public:
     void setOutputGain(float gain);
     void setNamBypass(bool bypass);
     void setIrBypass(bool bypass);
-    bool isRunning() const { return mRunning.load(); }
+    void setMuted(bool muted) { mMuted.store(muted); }
+    void setDeviceIds(int input, int output) { mInputDeviceId = input; mOutputDeviceId = output; }
+    bool isRunning() const { return mRunning.load() && streamError() == oboe::Result::OK; }
+    bool isRecoverableError() const { return streamError() == oboe::Result::ErrorDisconnected; }
     std::string lastError() const;
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream*, void*, int32_t) override;
-    void onErrorAfterClose(oboe::AudioStream*, oboe::Result) override;
+
 
 private:
     static constexpr int kBlockSize = 128;
+    // Each stream owns its error callback and epoch. A late error from an old
+    // device cannot mark a newly opened stream as disconnected.
+    class StreamErrors : public oboe::AudioStreamErrorCallback {
+    public:
+        StreamErrors(AudioEngine& owner, uint64_t token) : owner(owner), token(token) {}
+        bool onError(oboe::AudioStream*, oboe::Result error) override {
+            owner.reportError(token, error);
+            // The Kotlin management worker owns stop/close/reopen. Oboe must
+            // not close concurrently with that worker.
+            return true;
+        }
+    private:
+        AudioEngine& owner;
+        uint64_t token;
+    };
+    oboe::Result streamError() const {
+        return static_cast<oboe::Result>(static_cast<int32_t>(mStreamState.load()));
+    }
+    void reportError(uint64_t token, oboe::Result error) {
+        auto expected = token;
+        mStreamState.compare_exchange_strong(expected, token | static_cast<uint32_t>(error));
+    }
+    uint64_t streamToken() const { return mStreamState.load() & 0xffffffff00000000ULL; }
     struct ModelUpdate {
         bool isNam;
         std::unique_ptr<nam::DSP> nam;
@@ -53,10 +79,16 @@ private:
     std::atomic<bool> mIrBypass{false};
     std::atomic<bool> mRunning{false};
     std::atomic<bool> mProcessingFailed{false};
-    std::atomic<oboe::Result> mStreamError{oboe::Result::OK};
+    std::atomic<bool> mMuted{true};
+    std::atomic<uint64_t> mStreamState{0};
+    uint32_t mStreamEpoch = 0;
+    int mInputDeviceId = 0;
+    int mOutputDeviceId = 0;
     std::string mLastError;
 };
 
 static_assert(std::atomic<float>::is_always_lock_free, "Audio parameters must be lock-free");
 static_assert(std::atomic<bool>::is_always_lock_free, "Audio flags must be lock-free");
 static_assert(std::atomic<void*>::is_always_lock_free, "Model handoff must be lock-free");
+
+static_assert(std::atomic<uint64_t>::is_always_lock_free, "Stream error state must be lock-free");
