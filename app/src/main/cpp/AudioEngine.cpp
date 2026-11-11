@@ -1,51 +1,51 @@
 #include "AudioEngine.h"
-#include <android/log.h>
 #include <algorithm>
-#include <vector>
+#include <chrono>
+#include <cmath>
+#include <stdexcept>
+#include <thread>
 
-#define TAG "AudioEngine"
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, TAG, __VA_ARGS__)
+AudioEngine::~AudioEngine() { stop(); }
 
-AudioEngine::AudioEngine() {}
-
-AudioEngine::~AudioEngine() {
-    stop();
+std::string AudioEngine::lastError() const {
+    if (mProcessingFailed.load()) return "Audio processing failed. Restart the engine and reload the model.";
+    const auto error = mStreamError.load();
+    if (error != oboe::Result::OK)
+        return std::string("Audio stream stopped: ") + oboe::convertToText(error);
+    return mLastError;
 }
 
 bool AudioEngine::start() {
-    if (mPlayStream && mPlayStream->getState() == oboe::StreamState::Started) {
-        return true;
-    }
-
-    if (!openPlaybackStream()) {
-        return false;
-    }
-
-    if (!openRecordStream()) {
+    if (mRunning.load()) return true;
+    closeStreams();
+    // A fresh stream may negotiate a different sample rate. Never reuse DSP
+    // configured for an old stream.
+    mNamModel.reset();
+    mIrModel.reset();
+    mLastError.clear();
+    mStreamError.store(oboe::Result::OK);
+    mProcessingFailed.store(false);
+    if (!openPlaybackStream() || !openRecordStream()) {
         closeStreams();
         return false;
     }
-
-    oboe::Result result = mPlayStream->requestStart();
+    auto result = mRecordStream->requestStart();
+    if (result == oboe::Result::OK) {
+        mRunning.store(true);
+        result = mPlayStream->requestStart();
+    }
     if (result != oboe::Result::OK) {
-        LOGE("Error starting playback stream. Error: %s", oboe::convertToText(result));
+        mLastError = std::string("Cannot start audio: ") + oboe::convertToText(result);
         closeStreams();
         return false;
     }
-
-    result = mRecordStream->requestStart();
-    if (result != oboe::Result::OK) {
-        LOGE("Error starting record stream. Error: %s", oboe::convertToText(result));
-        closeStreams();
-        return false;
-    }
-
     return true;
 }
 
 void AudioEngine::stop() {
     closeStreams();
+    mNamModel.reset();
+    mIrModel.reset();
 }
 
 bool AudioEngine::openPlaybackStream() {
@@ -54,17 +54,20 @@ bool AudioEngine::openPlaybackStream() {
     builder.setPerformanceMode(oboe::PerformanceMode::LowLatency);
     builder.setSharingMode(oboe::SharingMode::Exclusive);
     builder.setFormat(oboe::AudioFormat::Float);
-    builder.setChannelCount(2); // Stereo
-
+    builder.setChannelCount(2);
+    builder.setFramesPerDataCallback(kBlockSize);
     builder.setDataCallback(this);
     builder.setErrorCallback(this);
-
-    oboe::Result result = builder.openStream(mPlayStream);
+    const auto result = builder.openStream(mPlayStream);
     if (result != oboe::Result::OK) {
-        LOGE("Failed to open playback stream. Error: %s", oboe::convertToText(result));
+        mLastError = std::string("Cannot open audio output: ") + oboe::convertToText(result);
         return false;
     }
-
+    if (mPlayStream->getFormat() != oboe::AudioFormat::Float ||
+        mPlayStream->getChannelCount() != 2) {
+        mLastError = "Audio output must support stereo floating-point samples.";
+        return false;
+    }
     return true;
 }
 
@@ -73,146 +76,190 @@ bool AudioEngine::openRecordStream() {
     builder.setDirection(oboe::Direction::Input);
     builder.setPerformanceMode(oboe::PerformanceMode::LowLatency);
     builder.setSharingMode(oboe::SharingMode::Exclusive);
-    builder.setFormat(mPlayStream->getFormat());
-    builder.setChannelCount(mPlayStream->getChannelCount());
+    builder.setFormat(oboe::AudioFormat::Float);
+    builder.setChannelCount(2);
     builder.setSampleRate(mPlayStream->getSampleRate());
     builder.setErrorCallback(this);
-
-    oboe::Result result = builder.openStream(mRecordStream);
+    const auto result = builder.openStream(mRecordStream);
     if (result != oboe::Result::OK) {
-        LOGE("Failed to open record stream. Error: %s", oboe::convertToText(result));
+        mLastError = std::string("Cannot open microphone: ") + oboe::convertToText(result);
         return false;
     }
-
+    if (mRecordStream->getFormat() != oboe::AudioFormat::Float ||
+        mRecordStream->getChannelCount() != 2 ||
+        mRecordStream->getSampleRate() != mPlayStream->getSampleRate()) {
+        mLastError = "Audio input and output formats do not match.";
+        return false;
+    }
     return true;
 }
 
 void AudioEngine::closeStreams() {
-    if (mRecordStream) {
-        mRecordStream->close();
-        mRecordStream.reset();
-    }
+    mRunning.store(false);
+    // Closing output first joins its callback before the input pointer or DSP
+    // objects can be changed by a control operation.
     if (mPlayStream) {
         mPlayStream->close();
         mPlayStream.reset();
     }
+    if (mRecordStream) {
+        mRecordStream->close();
+        mRecordStream.reset();
+    }
+}
+
+bool AudioEngine::publish(ModelUpdate& update) {
+    // The worker owns this update, including the retired model after the swap.
+    // The callback only swaps pointers and acknowledges; it never frees models.
+    mPending.store(&update);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!update.applied.load()) {
+        if (!mRunning.load() || std::chrono::steady_clock::now() >= deadline) {
+            auto* expected = &update;
+            if (mPending.compare_exchange_strong(expected, nullptr)) {
+                mLastError = "The audio callback is unavailable. Restart audio and try again.";
+                return false;
+            }
+            // The callback already claimed the update. Its acknowledgment is
+            // required before the worker can destroy the retired model.
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    mLastError.clear();
+    return true;
+}
+
+void AudioEngine::applyPendingUpdate() {
+    if (auto* update = mPending.exchange(nullptr)) {
+        if (update->isNam) mNamModel.swap(update->nam);
+        else mIrModel.swap(update->ir);
+        update->applied.store(true);
+    }
 }
 
 bool AudioEngine::loadNamModel(const std::string& path) {
-    std::lock_guard<std::mutex> lock(mDspMutex);
     try {
-        mNamModel = nam::get_dsp(std::filesystem::path(path));
-        return true;
+        if (!mRunning.load()) throw std::runtime_error("Start audio before loading an amp model.");
+        ModelUpdate update;
+        update.isNam = true;
+        update.nam = nam::get_dsp(std::filesystem::path(path));
+        if (!update.nam) throw std::runtime_error("The amp model could not be decoded.");
+        if (update.nam->NumInputChannels() != 1 || update.nam->NumOutputChannels() != 1)
+            throw std::runtime_error("Only mono NAM models are supported.");
+        const double rate = mPlayStream->getSampleRate();
+        const double expected = update.nam->GetExpectedSampleRate();
+        if (expected > 0 && std::abs(expected - rate) > 0.5 &&
+            !update.nam->SupportsArbitrarySampleRate())
+            throw std::runtime_error("Model requires " + std::to_string(static_cast<int>(expected)) +
+                                     " Hz; audio is running at " + std::to_string(static_cast<int>(rate)) + " Hz.");
+        update.nam->Reset(rate, kBlockSize);
+        std::array<float, kBlockSize> silence{}, output{};
+        float* inputs[] = {silence.data()};
+        float* outputs[] = {output.data()};
+        update.nam->process(inputs, outputs, kBlockSize);
+        return publish(update);
     } catch (const std::exception& e) {
-        LOGE("Failed to load NAM model: %s", e.what());
-        mNamModel.reset();
+        mLastError = std::string("Amp loading failed: ") + e.what();
         return false;
     }
 }
 
 bool AudioEngine::loadIrModel(const std::string& path) {
-    std::lock_guard<std::mutex> lock(mDspMutex);
     try {
-        double sampleRate = 48000.0;
-        if (mPlayStream) {
-            sampleRate = mPlayStream->getSampleRate();
-        }
-        mIrModel = std::make_unique<dsp::ImpulseResponse>(path.c_str(), sampleRate);
-        return true;
+        if (!mRunning.load()) throw std::runtime_error("Start audio before loading a cabinet response.");
+        // Validate raw data before constructing the IR: empty data would
+        // underflow the upstream convolution history length.
+        dsp::ImpulseResponse::IRData data;
+        const auto result = dsp::wav::Load(path.c_str(), data.mRawAudio, data.mRawAudioSampleRate);
+        if (result != dsp::wav::LoadReturnCode::SUCCESS)
+            throw std::runtime_error(dsp::wav::GetMsgForLoadReturnCode(result));
+        if (data.mRawAudio.empty() || !std::isfinite(data.mRawAudioSampleRate) ||
+            data.mRawAudioSampleRate <= 0 ||
+            !std::all_of(data.mRawAudio.begin(), data.mRawAudio.end(),
+                         [](float value) { return std::isfinite(value); }))
+            throw std::runtime_error("The IR must contain finite, nonempty mono audio.");
+        ModelUpdate update;
+        update.isNam = false;
+        update.ir = std::make_unique<dsp::ImpulseResponse>(data, mPlayStream->getSampleRate());
+        std::array<float, kBlockSize> silence{};
+        float* channels[] = {silence.data()};
+        // Allocate output pointers and history at the maximum processing size.
+        update.ir->Process(channels, 1, kBlockSize);
+        return publish(update);
     } catch (const std::exception& e) {
-        LOGE("Failed to load IR model: %s", e.what());
-        mIrModel.reset();
+        mLastError = std::string("Cabinet loading failed: ") + e.what();
         return false;
     }
 }
 
 void AudioEngine::setInputGain(float gain) {
-    std::lock_guard<std::mutex> lock(mDspMutex);
-    mInputGain = gain;
+    mInputGain.store(std::isfinite(gain) ? std::clamp(gain, 0.0f, 1.0f) : 0.0f);
 }
-
 void AudioEngine::setOutputGain(float gain) {
-    std::lock_guard<std::mutex> lock(mDspMutex);
-    mOutputGain = gain;
+    mOutputGain.store(std::isfinite(gain) ? std::clamp(gain, 0.0f, 1.0f) : 0.0f);
 }
-
-void AudioEngine::setNamBypass(bool bypass) {
-    std::lock_guard<std::mutex> lock(mDspMutex);
-    mNamBypass = bypass;
-}
-
-void AudioEngine::setIrBypass(bool bypass) {
-    std::lock_guard<std::mutex> lock(mDspMutex);
-    mIrBypass = bypass;
-}
+void AudioEngine::setNamBypass(bool bypass) { mNamBypass.store(bypass); }
+void AudioEngine::setIrBypass(bool bypass) { mIrBypass.store(bypass); }
 
 oboe::DataCallbackResult AudioEngine::onAudioReady(
-        oboe::AudioStream *audioStream,
-        void *audioData,
-        int32_t numFrames) {
-
-    if (!mRecordStream || !mPlayStream) {
+        oboe::AudioStream* stream, void* audioData, int32_t numFrames) {
+    auto* output = static_cast<float*>(audioData);
+    const int channels = stream->getChannelCount();
+    std::fill_n(output, numFrames * channels, 0.0f);
+    if (!mRunning.load()) return oboe::DataCallbackResult::Stop;
+    // Oboe's callback adapter supplies this exact quantum. Keeping it fixed
+    // also prevents shape-dependent reallocations in upstream NAM processors.
+    if (numFrames != kBlockSize || channels != 2) {
+        mProcessingFailed.store(true);
+        mRunning.store(false);
         return oboe::DataCallbackResult::Stop;
     }
-
-    auto *outputData = static_cast<float *>(audioData);
-    int32_t channels = mPlayStream->getChannelCount(); // Should be 2
-
-    oboe::ResultWithValue<int32_t> result = mRecordStream->read(outputData, numFrames, 0);
-    int32_t framesRead = (result == oboe::Result::OK) ? result.value() : 0;
-
-    if (framesRead == 0) {
-        std::fill_n(outputData, numFrames * channels, 0.0f);
-        return oboe::DataCallbackResult::Continue;
-    }
-
-    std::vector<float> monoData(framesRead);
-    for (int32_t i = 0; i < framesRead; ++i) {
-        float sample = 0.0f;
-        for (int32_t c = 0; c < channels; ++c) {
-            sample += outputData[i * channels + c];
+    applyPendingUpdate();
+    const float inputGain = mInputGain.load();
+    const float outputGain = mOutputGain.load();
+    const bool namBypass = mNamBypass.load();
+    const bool irBypass = mIrBypass.load();
+    try {
+        const auto result = mRecordStream->read(output, kBlockSize, 0);
+        if (result != oboe::Result::OK) {
+            std::fill_n(output, numFrames * channels, 0.0f);
+            mStreamError.store(result.error());
+            mRunning.store(false);
+            return oboe::DataCallbackResult::Stop;
         }
-        monoData[i] = (sample / channels) * mInputGain;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(mDspMutex);
-
-        float* channelPointers[1] = { monoData.data() };
-
-        std::vector<float> namOutput(framesRead, 0.0f);
-        float* namOutputPointers[1] = { namOutput.data() };
-
-        if (mNamModel && !mNamBypass) {
-            mNamModel->process(channelPointers, namOutputPointers, framesRead);
-            std::copy(namOutput.begin(), namOutput.end(), monoData.begin());
+        const int framesRead = result.value();
+        mMono.fill(0.0f);
+        for (int i = 0; i < framesRead; ++i)
+            mMono[i] = (output[i * 2] + output[i * 2 + 1]) * 0.5f * inputGain;
+        // Missing input is silence for this time interval. Process the entire
+        // quantum so DSP history and delay tails still advance on underruns.
+        float* input[] = {mMono.data()};
+        float* namOutput[] = {mNamOutput.data()};
+        if (mNamModel && !namBypass) {
+            mNamModel->process(input, namOutput, kBlockSize);
+            std::copy_n(mNamOutput.data(), kBlockSize, mMono.data());
         }
-
-        if (mIrModel && !mIrBypass) {
-            float** irOutput = mIrModel->Process(channelPointers, 1, framesRead);
-            if (irOutput && irOutput[0]) {
-                std::copy_n(irOutput[0], framesRead, monoData.begin());
-            }
+        if (mIrModel && !irBypass) {
+            auto irOutput = mIrModel->Process(input, 1, kBlockSize);
+            std::copy_n(irOutput[0], kBlockSize, mMono.data());
         }
-    }
-
-    for (int32_t i = 0; i < framesRead; ++i) {
-        float sample = monoData[i] * mOutputGain;
-        if (sample > 1.0f) sample = 1.0f;
-        else if (sample < -1.0f) sample = -1.0f;
-
-        for (int32_t c = 0; c < channels; ++c) {
-            outputData[i * channels + c] = sample;
+        for (int i = 0; i < kBlockSize; ++i) {
+            const float value = mMono[i] * outputGain;
+            const float sample = std::isfinite(value) ? std::clamp(value, -1.0f, 1.0f) : 0.0f;
+            output[i * 2] = sample;
+            output[i * 2 + 1] = sample;
         }
+    } catch (...) {
+        // Never let a third-party DSP exception cross the C audio callback.
+        std::fill_n(output, numFrames * channels, 0.0f);
+        mProcessingFailed.store(true);
+        mRunning.store(false);
+        return oboe::DataCallbackResult::Stop;
     }
-
-    if (framesRead < numFrames) {
-        std::fill_n(outputData + framesRead * channels, (numFrames - framesRead) * channels, 0.0f);
-    }
-
     return oboe::DataCallbackResult::Continue;
 }
 
-void AudioEngine::onErrorAfterClose(oboe::AudioStream *audioStream, oboe::Result error) {
-    LOGE("Error was %s", oboe::convertToText(error));
+void AudioEngine::onErrorAfterClose(oboe::AudioStream*, oboe::Result error) {
+    mStreamError.store(error);
+    mRunning.store(false);
 }

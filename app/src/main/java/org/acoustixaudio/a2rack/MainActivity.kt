@@ -25,9 +25,9 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (isGranted) {
-            // AudioEngine already tried to start in ViewModel init,
-            // but we can start it again safely if it failed.
-            AudioEngine.startEngine()
+            viewModel.startAudio()
+        } else {
+            viewModel.permissionDenied()
         }
     }
 
@@ -37,6 +37,8 @@ class MainActivity : ComponentActivity() {
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            viewModel.startAudio()
         }
 
         setContent {
@@ -49,7 +51,13 @@ class MainActivity : ComponentActivity() {
                         entryProvider = { route ->
                             when (route) {
                                 "Home" -> NavEntry(route) {
-                                    MainScreen(viewModel = viewModel)
+                                    MainScreen(viewModel = viewModel, onStartAudio = {
+                                        if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                            viewModel.startAudio()
+                                        } else {
+                                            requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                        }
+                                    })
                                 }
                                 else -> NavEntry(route) { }
                             }

@@ -16,7 +16,7 @@ import androidx.compose.ui.unit.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(viewModel: A2RackViewModel) {
+fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
 
@@ -55,6 +55,19 @@ fun MainScreen(viewModel: A2RackViewModel) {
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                Text(if (state.isEngineRunning) "Audio running" else "Audio stopped")
+                if (!state.isEngineRunning) {
+                    Button(onClick = onStartAudio, enabled = !state.isBusy) {
+                        Text("Start Audio")
+                    }
+                }
+                if (state.isBusy) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                state.errorMessage?.let { message ->
+                    Text(message, color = MaterialTheme.colorScheme.error)
+                }
+
                 // Gains
                 GainControl(
                     label = "Input Gain",
@@ -113,13 +126,15 @@ fun MainScreen(viewModel: A2RackViewModel) {
                 FilePickerItem(
                     label = "Neural Amp Model (.nam)",
                     filePath = state.namFilePath,
-                    onPickFile = { namLauncher.launch("*/*") }
+                    onPickFile = { namLauncher.launch("*/*") },
+                    enabled = state.isEngineRunning && !state.isBusy
                 )
 
                 FilePickerItem(
                     label = "Cab Impulse Response (.wav)",
                     filePath = state.wavFilePath,
-                    onPickFile = { wavLauncher.launch("audio/wav") }
+                    onPickFile = { wavLauncher.launch("audio/wav") },
+                    enabled = state.isEngineRunning && !state.isBusy
                 )
 
                 HorizontalDivider()
@@ -129,10 +144,10 @@ fun MainScreen(viewModel: A2RackViewModel) {
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
-                    Button(onClick = { importLauncher.launch(arrayOf("application/json", "*/*")) }) {
+                    Button(enabled = state.isEngineRunning && !state.isBusy, onClick = { importLauncher.launch(arrayOf("application/json", "*/*")) }) {
                         Text("Import Preset")
                     }
-                    Button(onClick = { exportLauncher.launch("preset.json") }) {
+                    Button(enabled = !state.isBusy, onClick = { exportLauncher.launch("preset.json") }) {
                         Text("Export Preset")
                     }
                 }
@@ -160,7 +175,7 @@ fun GainControl(label: String, value: Float, onValueChange: (Float) -> Unit) {
 }
 
 @Composable
-fun FilePickerItem(label: String, filePath: String?, onPickFile: () -> Unit) {
+fun FilePickerItem(label: String, filePath: String?, onPickFile: () -> Unit, enabled: Boolean = true) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
@@ -178,7 +193,7 @@ fun FilePickerItem(label: String, filePath: String?, onPickFile: () -> Unit) {
                 color = if (filePath == null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Start
             )
-            Button(onClick = onPickFile, modifier = Modifier.align(Alignment.End)) {
+            Button(onClick = onPickFile, enabled = enabled, modifier = Modifier.align(Alignment.End)) {
                 Text("Select File")
             }
         }

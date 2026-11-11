@@ -36,7 +36,8 @@ target_compile_definitions(a2rack PRIVATE
 
 target_compile_options(a2rack PRIVATE
     -Wno-error
-    -Ofast
+    # Preserve NaN/Inf checks at the audio boundary.
+    -O3
 )
 
 target_link_libraries(a2rack
