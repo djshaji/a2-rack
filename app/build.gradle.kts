@@ -52,7 +52,12 @@ android {
 }
 
 dependencies {
-    implementation("com.google.oboe:oboe:1.8.1")
+    constraints {
+        implementation("androidx.fragment:fragment:1.3.0") {
+            because("Activity Result permission APIs require Fragment 1.3.0 or newer")
+        }
+    }
+    implementation("com.google.oboe:oboe:1.11.0")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.accompanist.permissions)
     implementation(libs.androidx.activity.compose)
