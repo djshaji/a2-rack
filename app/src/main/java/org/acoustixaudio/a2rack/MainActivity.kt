@@ -1,6 +1,10 @@
 package org.acoustixaudio.a2rack
 
 import android.Manifest
+import android.content.res.Configuration
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.tooling.preview.Preview
+import kotlinx.coroutines.Dispatchers
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -83,4 +87,34 @@ class MainActivity : ComponentActivity() {
     private fun hasMicrophonePermission() =
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
+}
+
+@Preview(name = "A2 Rack • Light", showBackground = true)
+@Preview(name = "A2 Rack • Dark", showBackground = true, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Composable
+private fun MainActivityPreview() {
+    val previewViewModel = remember {
+        A2RackViewModel(PreviewAudioBackend, Dispatchers.Main.immediate)
+    }
+    A2RackTheme {
+        MainScreen(viewModel = previewViewModel, onStartAudio = {})
+    }
+}
+
+// Layoutlib cannot load the Android native audio library or access microphone hardware.
+private object PreviewAudioBackend : AudioBackend {
+    override fun startEngine() = false
+    override fun stopEngine() {}
+    override fun setMuted(muted: Boolean) {}
+    override fun setDeviceIds(inputId: Int, outputId: Int) {}
+    override fun isRecoverableError() = false
+    override fun isRunning() = false
+    override fun lastError() = ""
+    override fun diagnostics() = AudioDiagnostics()
+    override fun loadNamModel(path: String) = false
+    override fun loadIrModel(path: String) = false
+    override fun setInputGain(gain: Float) {}
+    override fun setOutputGain(gain: Float) {}
+    override fun setNamBypass(bypass: Boolean) {}
+    override fun setIrBypass(bypass: Boolean) {}
 }
