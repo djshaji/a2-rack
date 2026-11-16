@@ -2,11 +2,15 @@
 
 A prototype Android amp and cabinet processor built with Kotlin, Jetpack Compose, and a native C++ audio engine. Audio passes through input gain, an optional Neural Amp Modeler (NAM) model, an optional cabinet impulse response, and output gain before stereo playback.
 
+## Screenshot
+
+<img src="app/img.png" alt="A2 Rack main screen with input and output device selectors, audio controls, gain sliders, and amp bypass" width="360">
+
 ## Current progress
 
 | Area | Status |
 | --- | --- |
-| Compose interface | Input/output gain, amp/cab bypass, model selection, and preset controls implemented |
+| Compose interface | Independent input/output device selectors, gain controls, bypass switches, model/preset controls, and light/dark previews |
 | Audio engine | Fixed buffers, atomic controls/muting, callback-boundary model swaps, and foreground/route recovery implemented |
 | NAM models | Worker-thread loading, mono/rate validation, and stream-specific initialization implemented |
 | Cabinet responses | WAV validation and buffer warm-up implemented before activation |
@@ -24,7 +28,8 @@ Open the project in Android Studio and sync Gradle. The current configuration us
 - Minimum Android API 29; compile and target API 37.
 - Java source/target compatibility 11.
 - CMake 3.22.1 and C++17.
-- Oboe 1.8.1 through Prefab.
+- Oboe 1.11.0 through Prefab.
+- Fragment 1.3.0 minimum dependency constraint for Activity Result permission APIs.
 - NeuralAmpModelerCore under `app/src/main/cpp/NeuralAmpModelerCore`.
 
 Install the SDK and native build tools requested by Gradle, and ensure the native dependency sources are present.
@@ -34,15 +39,21 @@ Install the SDK and native build tools requested by Gradle, and ensure the nativ
 ./gradlew :app:testDebugUnitTest
 ```
 
-The debug build passes with all 44 JVM tests passing after diagnostics integration. Device tests and audio latency measurements are still required to validate real-time behavior.
+The latest verified debug build, release fatal-lint check, and all 47 JVM tests pass after device-selection integration. Device tests and audio latency measurements are still required to validate real-time behavior.
+
+## Compose previews
+
+Open [MainActivity.kt](app/src/main/java/org/acoustixaudio/a2rack/MainActivity.kt) in Android Studio and switch to Split or Design view. `MainActivityPreview` provides light and dark `@Preview` variants using a preview-only audio backend. Previews render the screen without loading native audio or requesting microphone access.
 
 ## Using the prototype
 
 1. Launch the app and grant microphone permission.
-2. Select a `.nam` amp model and a `.wav` cabinet impulse response.
-3. Adjust input and output gain, or bypass either processing stage.
-4. Use Import Preset to open settings JSON or a portable preset bundle.
-5. Use Export Preset and choose Portable bundle to include model files, or Settings only for JSON references to the local library.
+2. Choose Input device and Output device independently, or leave each set to Automatic.
+3. Select a `.nam` amp model and a `.wav` cabinet impulse response.
+4. Adjust input and output gain, or bypass either processing stage. Use Stop Audio and Start Audio to control playback.
+5. Use Import Preset to open settings JSON or a portable preset bundle.
+6. Use Export Preset and choose Portable bundle to include model files, or Settings only for JSON references to the local library.
+7. Expand Show audio diagnostics to inspect stream settings, levels, clipping, and errors.
 
 The engine starts when the activity is visible and microphone permission is granted. Leaving the activity, including opening a document picker, immediately mutes output and queues stream shutdown. Returning restores the previously running session; picker results wait for restoration before applying files.
 
