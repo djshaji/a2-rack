@@ -11,16 +11,18 @@ import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
 
-internal enum class EndpointKind { USB, WIRED, BUILTIN }
-internal data class AudioEndpoint(
+enum class EndpointKind { USB, WIRED, BUILTIN, OTHER }
+data class AudioEndpoint(
     val id: Int, val kind: EndpointKind, val input: Boolean, val output: Boolean,
     val name: String, val address: String = ""
 )
 
-internal fun selectAudioRoute(devices: List<AudioEndpoint>): AudioRoute {
+internal fun selectAudioRoute(devices: List<AudioEndpoint>, inputId: Int? = null, outputId: Int? = null): AudioRoute {
     val ordered = devices.sortedWith(compareBy<AudioEndpoint> { it.kind.ordinal }.thenBy { it.id })
-    val output = ordered.firstOrNull { it.output }
-    val input = ordered.firstOrNull {
+    val output = if (outputId != null) ordered.firstOrNull { it.output && it.id == outputId }
+        else ordered.firstOrNull { it.output }
+    val input = if (inputId != null) ordered.firstOrNull { it.input && it.id == inputId }
+        else ordered.firstOrNull {
         it.input && output?.kind == it.kind && output.address.isNotEmpty() && output.address == it.address
     } ?: ordered.firstOrNull { it.input && it.kind == output?.kind }
         ?: ordered.firstOrNull { it.input }
@@ -39,7 +41,7 @@ internal fun selectAudioRoute(devices: List<AudioEndpoint>): AudioRoute {
 /** Registered only while the activity is visible. The initial device callback is deduplicated by policy. */
 internal class AudioRouteMonitor(
     context: Context,
-    private val onRoute: (AudioRoute) -> Unit,
+    private val onDevices: (List<AudioEndpoint>) -> Unit,
     private val onNoisy: () -> Unit
 ) {
     private val context = context.applicationContext
@@ -80,11 +82,11 @@ internal class AudioRouteMonitor(
                 AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
                 AudioDeviceInfo.TYPE_LINE_ANALOG, AudioDeviceInfo.TYPE_LINE_DIGITAL -> EndpointKind.WIRED
                 AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, AudioDeviceInfo.TYPE_BUILTIN_MIC -> EndpointKind.BUILTIN
-                else -> return@mapNotNull null
+                else -> EndpointKind.OTHER
             }
             AudioEndpoint(device.id, kind, device.isSource, device.isSink,
                 device.productName.toString(), device.address)
         }
-        onRoute(selectAudioRoute(endpoints))
+        onDevices(endpoints)
     }
 }

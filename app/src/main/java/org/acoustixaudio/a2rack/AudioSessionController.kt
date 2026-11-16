@@ -100,6 +100,17 @@ internal class AudioSessionController(
         schedule(400)
     }
 
+    // Explicit selection authorizes the chosen route, including built-in audio.
+    // It does not change the user's Start/Stop intent.
+    fun selectRoute(next: AudioRoute) {
+        route = next
+        externalRequired = false
+        noisy = false
+        faulted = false
+        retries = 0
+        schedule(400)
+    }
+
     fun becomingNoisy() {
         if (!wanted) return
         noisy = true

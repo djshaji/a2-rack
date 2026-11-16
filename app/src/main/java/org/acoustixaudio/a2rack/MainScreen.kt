@@ -83,6 +83,10 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
             ) {
                 Text(state.audioStatus)
                 Text(state.routeLabel, style = MaterialTheme.typography.bodyMedium)
+                AudioDeviceSelector("Input device", state.audioDevices.filter { it.input },
+                    state.selectedInputId, !busy, viewModel::selectInputDevice)
+                AudioDeviceSelector("Output device", state.audioDevices.filter { it.output },
+                    state.selectedOutputId, !busy, viewModel::selectOutputDevice)
                 if (state.audioRequested) {
                     Button(onClick = viewModel::stopAudio) { Text("Stop Audio") }
                 }
@@ -234,6 +238,38 @@ fun FilePickerItem(label: String, fileName: String?, onPickFile: () -> Unit, ena
             Button(onClick = onPickFile, enabled = enabled, modifier = Modifier.align(Alignment.End)) {
                 Text(if (issue == null) "Select File" else "Replace File")
             }
+        }
+    }
+}
+
+@Composable
+private fun AudioDeviceSelector(
+    label: String, devices: List<AudioEndpoint>, selectedId: Int?,
+    enabled: Boolean, onSelect: (Int?) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selected = if (selectedId == null) "Automatic"
+        else devices.firstOrNull { it.id == selectedId }?.let { "${it.name} (#${it.id})" }
+            ?: "Disconnected device (#$selectedId)"
+    Column {
+        Text(label, style = MaterialTheme.typography.titleSmall)
+        Box {
+            OutlinedButton(enabled = enabled, onClick = { expanded = true }) { Text(selected) }
+            DropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
+                DropdownMenuItem(text = { Text("Automatic") }, onClick = {
+                    expanded = false
+                    onSelect(null)
+                })
+                devices.forEach { device ->
+                    DropdownMenuItem(text = { Text("${device.name} (#${device.id})") }, onClick = {
+                        expanded = false
+                        onSelect(device.id)
+                    })
+                }
+            }
+        }
+        if (selectedId != null && devices.none { it.id == selectedId }) {
+            Text("Choose an available device or Automatic.", color = MaterialTheme.colorScheme.error)
         }
     }
 }

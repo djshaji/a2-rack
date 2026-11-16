@@ -52,7 +52,9 @@ Loading failures preserve the previous active model. Only mono NAM models are su
 
 ## Audio routes and recovery
 
-The app prefers connected USB audio, then wired headphones/headsets, then the device speaker and microphone. It pins AAudio streams to the selected device IDs and refuses a mismatched route. The current route and recovery status appear above the controls.
+Separate Input device and Output device menus appear above the controls. Each offers Automatic or an available device reported by Android, including USB, wired, built-in, HDMI, and Bluetooth routes. Opening a route still depends on device/OS support for the engine's format. Automatic prefers USB audio, then wired headphones/headsets, then built-in audio. Changing a selection mutes and reopens streams through the recovery controller, preserving Stop Audio intent. Explicit selections survive activity recreation in the ViewModel and remain marked disconnected if their device disappears; choose another device or Automatic to recover. Selections are local to the current app session and are not included in presets.
+
+AAudio streams are pinned to the chosen IDs and mismatched routes are refused. Explicitly selecting the built-in output authorizes speaker playback after an external route disconnects.
 
 Disconnect errors silence the native callback immediately. Device-list and audio-becoming-noisy callbacks also mute independently of model-loading work. After external audio is removed, the app waits for an external device rather than automatically switching to the speaker. Reconnecting reopens streams and reloads models. To intentionally use the speaker after unplugging, press Stop Audio, then Start Audio.
 

@@ -36,7 +36,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         viewModel.initializeStorage(applicationContext)
-        routeMonitor = AudioRouteMonitor(this, viewModel::onRouteChanged, viewModel::onAudioBecomingNoisy)
+        routeMonitor = AudioRouteMonitor(this, viewModel::onAudioDevicesChanged, viewModel::onAudioBecomingNoisy)
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)

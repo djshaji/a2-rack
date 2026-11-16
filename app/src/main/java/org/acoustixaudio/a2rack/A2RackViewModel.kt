@@ -38,6 +38,9 @@ data class A2RackState(
     val isTransitioning: Boolean = false,
     val audioStatus: String = "Audio stopped",
     val routeLabel: String = "System audio",
+    val audioDevices: List<AudioEndpoint> = emptyList(),
+    val selectedInputId: Int? = null,
+    val selectedOutputId: Int? = null,
     val errorMessage: String? = null
 ) {
     fun preset() = RackPreset(inputGain = inputGain, outputGain = outputGain,
@@ -125,6 +128,29 @@ class A2RackViewModel internal constructor(
         if (route.outputId > 0) deviceNames[route.outputId] = route.outputName
         session.route(route)
     }
+    fun onAudioDevicesChanged(devices: List<AudioEndpoint>) {
+        _uiState.update { it.copy(audioDevices = devices) }
+        val state = _uiState.value
+        onRouteChanged(selectAudioRoute(devices, state.selectedInputId, state.selectedOutputId))
+    }
+
+    fun selectInputDevice(id: Int?) = selectDevice(id, true)
+    fun selectOutputDevice(id: Int?) = selectDevice(id, false)
+
+    private fun selectDevice(id: Int?, input: Boolean) {
+        val state = _uiState.value
+        if (state.isBusy || state.isTransitioning) return
+        if (id != null && state.audioDevices.none { it.id == id && if (input) it.input else it.output }) return
+        _uiState.update {
+            if (input) it.copy(selectedInputId = id) else it.copy(selectedOutputId = id)
+        }
+        val selected = _uiState.value
+        val route = selectAudioRoute(selected.audioDevices, selected.selectedInputId, selected.selectedOutputId)
+        if (route.inputId > 0) deviceNames[route.inputId] = route.inputName
+        if (route.outputId > 0) deviceNames[route.outputId] = route.outputName
+        session.selectRoute(route)
+    }
+
     fun onAudioBecomingNoisy() = session.becomingNoisy()
 
     fun onForegroundChanged(isVisible: Boolean, permissionGranted: Boolean) {
