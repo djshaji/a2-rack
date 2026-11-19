@@ -18,7 +18,13 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -45,6 +51,7 @@ internal fun MainScreen(
     var showExportOptions by rememberSaveable { mutableStateOf(false) }
     var showDiagnostics by rememberSaveable { mutableStateOf(false) }
     var showOverflow by remember { mutableStateOf(false) }
+    var showAbout by rememberSaveable { mutableStateOf(false) }
 
     val namLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let { viewModel.loadNamFile(context, it) }
@@ -64,6 +71,10 @@ internal fun MainScreen(
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri?.let { viewModel.importPreset(context, it) }
+    }
+
+    if (showAbout) {
+        AboutDialog(onDismiss = { showAbout = false })
     }
 
     if (showExportOptions) {
@@ -117,6 +128,13 @@ internal fun MainScreen(
                                 onClick = {
                                     showOverflow = false
                                     showDiagnostics = !showDiagnostics
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("About") },
+                                onClick = {
+                                    showOverflow = false
+                                    showAbout = true
                                 }
                             )
                         }
@@ -241,6 +259,33 @@ internal fun MainScreen(
             }
         }
     }
+}
+
+@Composable
+private fun AboutDialog(onDismiss: () -> Unit) {
+    val linkStyle = SpanStyle(
+        color = MaterialTheme.colorScheme.primary,
+        textDecoration = TextDecoration.Underline
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("About A2 Rack") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Developed by djshaji")
+                Text(buildAnnotatedString {
+                    append("Source: ")
+                    withLink(LinkAnnotation.Url(
+                        url = "https://github.com/djshaji/a2-rack",
+                        styles = TextLinkStyles(style = linkStyle)
+                    )) {
+                        append("GitHub repository")
+                    }
+                })
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }
+    )
 }
 
 @Composable
