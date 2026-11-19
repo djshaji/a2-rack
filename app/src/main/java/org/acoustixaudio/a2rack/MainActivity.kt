@@ -3,6 +3,11 @@ package org.acoustixaudio.a2rack
 import android.Manifest
 import android.content.res.Configuration
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.tooling.preview.Preview
 import kotlinx.coroutines.Dispatchers
 import android.content.pm.PackageManager
@@ -25,6 +30,7 @@ import org.acoustixaudio.a2rack.ui.theme.A2RackTheme
 class MainActivity : ComponentActivity() {
     private val viewModel: A2RackViewModel by viewModels()
     private lateinit var routeMonitor: AudioRouteMonitor
+    private lateinit var proBilling: ProBilling
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -39,6 +45,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        proBilling = ProBilling(applicationContext)
         viewModel.initializeStorage(applicationContext)
         routeMonitor = AudioRouteMonitor(this, viewModel::onAudioDevicesChanged, viewModel::onAudioBecomingNoisy)
 
@@ -49,6 +56,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             A2RackTheme {
                 val backStack = remember { mutableStateListOf("Home") }
+                val pro by proBilling.state.collectAsStateWithLifecycle()
+                var showPro by rememberSaveable { mutableStateOf(false) }
+                if (showPro && !pro.owned) {
+                    ProPurchaseDialog(pro, onBuy = { proBilling.buy(this@MainActivity) },
+                        onRetry = proBilling::refresh, onDismiss = { showPro = false })
+                }
 
                 Scaffold(modifier = Modifier.fillMaxSize()) { _ ->
                     NavDisplay(
@@ -56,7 +69,14 @@ class MainActivity : ComponentActivity() {
                         entryProvider = { route ->
                             when (route) {
                                 "Home" -> NavEntry(route) {
-                                    MainScreen(viewModel = viewModel, onStartAudio = ::requestAudioStart)
+                                    MainScreen(viewModel = viewModel, onStartAudio = ::requestAudioStart,
+                                        onStopAudio = {
+                                            viewModel.stopAudio()
+                                            if (!pro.owned) {
+                                                showPro = true
+                                                proBilling.refresh()
+                                            }
+                                        })
                                 }
                                 else -> NavEntry(route) { }
                             }
@@ -76,6 +96,16 @@ class MainActivity : ComponentActivity() {
         viewModel.onForegroundChanged(false, hasMicrophonePermission())
         routeMonitor.stop()
         super.onStop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        proBilling.refresh()
+    }
+
+    override fun onDestroy() {
+        proBilling.close()
+        super.onDestroy()
     }
 
     private fun requestAudioStart() {

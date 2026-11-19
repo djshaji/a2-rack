@@ -16,7 +16,11 @@ import androidx.compose.ui.unit.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
+fun MainScreen(
+    viewModel: A2RackViewModel,
+    onStartAudio: () -> Unit,
+    onStopAudio: () -> Unit = viewModel::stopAudio
+) {
     val state by viewModel.uiState.collectAsState()
     val busy = state.isBusy || state.isTransitioning
     val context = LocalContext.current
@@ -88,7 +92,7 @@ fun MainScreen(viewModel: A2RackViewModel, onStartAudio: () -> Unit) {
                 AudioDeviceSelector("Output device", state.audioDevices.filter { it.output },
                     state.selectedOutputId, !busy, viewModel::selectOutputDevice)
                 if (state.audioRequested) {
-                    Button(onClick = viewModel::stopAudio) { Text("Stop Audio") }
+                    Button(onClick = onStopAudio) { Text("Stop Audio") }
                 }
                 if (!state.isEngineRunning && !state.isTransitioning) {
                     Button(onClick = onStartAudio, enabled = !busy) {

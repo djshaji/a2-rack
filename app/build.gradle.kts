@@ -15,8 +15,8 @@ android {
         applicationId = "org.acoustixaudio.a2rack"
         minSdk = 29
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
@@ -58,6 +58,7 @@ dependencies {
         }
     }
     implementation("com.google.oboe:oboe:1.11.0")
+    implementation("com.android.billingclient:billing:9.1.0")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.accompanist.permissions)
     implementation(libs.androidx.activity.compose)

@@ -14,6 +14,10 @@ A2 Rack stores copies of the amp models and cabinet impulse responses you import
 
 Android may back up or transfer app files according to your device settings. Clearing A2 Rack’s app data removes its local copies and settings. Files you exported remain in the locations you chose until you delete them there.
 
+## Optional Pro purchase
+
+Google Play handles checkout and payment details for the optional one-time Pro purchase. A2 Rack checks purchase status with Google Play and stores an ownership flag on your device to remember whether to show the Pro prompt. A2 Rack does not send purchase information to a developer server.
+
 ## Source code and questions
 
 You can review the code or ask a privacy question through the [A2 Rack GitHub repository](https://github.com/djshaji/a2-rack). GitHub issues are public, so avoid including personal information in a report.
