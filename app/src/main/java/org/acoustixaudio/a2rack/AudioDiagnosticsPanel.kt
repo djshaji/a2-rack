@@ -8,12 +8,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -21,13 +17,10 @@ import java.util.Locale
 
 @Composable
 fun AudioDiagnosticsPanel(viewModel: A2RackViewModel) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(onClick = { expanded = !expanded }) {
-                Text(if (expanded) "Hide audio diagnostics" else "Show audio diagnostics")
-            }
-            if (expanded) DiagnosticsContent(viewModel)
+            Text("Audio diagnostics", style = MaterialTheme.typography.titleMedium)
+            DiagnosticsContent(viewModel)
         }
     }
 }

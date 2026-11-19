@@ -51,9 +51,9 @@ Open [MainActivity.kt](app/src/main/java/org/acoustixaudio/a2rack/MainActivity.k
 2. Choose Input device and Output device independently, or leave each set to Automatic.
 3. Select a `.nam` amp model and a `.wav` cabinet impulse response.
 4. Adjust input and output gain, or bypass either processing stage. Use Stop Audio and Start Audio to control playback.
-5. Use Import Preset to open settings JSON or a portable preset bundle.
-6. Use Export Preset and choose Portable bundle to include model files, or Settings only for JSON references to the local library.
-7. Expand Show audio diagnostics to inspect stream settings, levels, clipping, and errors.
+5. Open **More options** and choose **Import preset** to open settings JSON or a portable preset bundle.
+6. Choose **Export preset**, then **Portable bundle** to include model files or **Settings only** for JSON references to the local library.
+7. Choose **Show diagnostics** to inspect stream settings, levels, clipping, and errors.
 
 The engine starts when the activity is visible and microphone permission is granted. Leaving the activity, including opening a document picker, immediately mutes output and queues stream shutdown. Returning restores the previously running session; picker results wait for restoration before applying files.
 
@@ -73,7 +73,7 @@ Route events are debounced for 400 ms. Native disconnect faults can trigger up t
 
 ## Audio diagnostics
 
-Open **Show audio diagnostics** below the preset controls. Only the diagnostics content subscribes to meter updates, so the main controls do not recompose for each reading. Collection runs on the management worker four times per second while the activity is visible and pauses in the background.
+In **More options**, choose **Show diagnostics** to display the panel below Audio routing. Choose **Hide diagnostics** to close it. Only the diagnostics content subscribes to meter updates, so the main controls do not recompose for each reading. Collection runs on the management worker four times per second while the activity is visible and pauses in the background.
 
 The panel displays:
 

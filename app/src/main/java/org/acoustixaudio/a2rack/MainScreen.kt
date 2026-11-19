@@ -6,8 +6,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -39,7 +42,9 @@ internal fun MainScreen(
 ) {
     val busy = state.isBusy || state.isTransitioning
     val context = LocalContext.current
-    var showExportOptions by remember { mutableStateOf(false) }
+    var showExportOptions by rememberSaveable { mutableStateOf(false) }
+    var showDiagnostics by rememberSaveable { mutableStateOf(false) }
+    var showOverflow by remember { mutableStateOf(false) }
 
     val namLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let { viewModel.loadNamFile(context, it) }
@@ -83,7 +88,41 @@ internal fun MainScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("A2 Rack") })
+            TopAppBar(
+                title = { Text("A2 Rack") },
+                actions = {
+                    Box {
+                        IconButton(onClick = { showOverflow = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                        }
+                        DropdownMenu(expanded = showOverflow, onDismissRequest = { showOverflow = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Import preset") },
+                                enabled = state.isEngineRunning && !busy,
+                                onClick = {
+                                    showOverflow = false
+                                    importLauncher.launch(arrayOf("*/*"))
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Export preset") },
+                                enabled = !busy,
+                                onClick = {
+                                    showOverflow = false
+                                    showExportOptions = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (showDiagnostics) "Hide diagnostics" else "Show diagnostics") },
+                                onClick = {
+                                    showOverflow = false
+                                    showDiagnostics = !showDiagnostics
+                                }
+                            )
+                        }
+                    }
+                }
+            )
         }
     ) { innerPadding ->
         Box(
@@ -195,22 +234,10 @@ internal fun MainScreen(
                 AudioDeviceSelector("Output device", state.audioDevices.filter { it.output },
                     state.selectedOutputId, !busy, viewModel::selectOutputDevice)
 
-                HorizontalDivider()
-
-                Text("Presets", style = MaterialTheme.typography.titleMedium)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    Button(enabled = state.isEngineRunning && !busy, onClick = { importLauncher.launch(arrayOf("*/*")) }) {
-                        Text("Import Preset")
-                    }
-                    Button(enabled = !busy, onClick = { showExportOptions = true }) {
-                        Text("Export Preset")
-                    }
+                if (showDiagnostics) {
+                    HorizontalDivider()
+                    AudioDiagnosticsPanel(viewModel)
                 }
-
-                AudioDiagnosticsPanel(viewModel)
             }
         }
     }
