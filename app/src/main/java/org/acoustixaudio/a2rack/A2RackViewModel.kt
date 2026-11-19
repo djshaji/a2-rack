@@ -157,8 +157,9 @@ class A2RackViewModel internal constructor(
     fun onAudioBecomingNoisy() = session.becomingNoisy()
 
     fun onForegroundChanged(isVisible: Boolean, permissionGranted: Boolean) {
-        visible.value = isVisible
+        // Publish the transition before waking document results waiting for the foreground.
         session.foreground(isVisible, permissionGranted)
+        visible.value = isVisible
         if (isVisible) startDiagnostics()
         else {
             diagnosticsJob?.cancel()

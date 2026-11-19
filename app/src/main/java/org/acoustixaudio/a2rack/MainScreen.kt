@@ -45,7 +45,7 @@ internal fun MainScreen(
         uri?.let { viewModel.loadNamFile(context, it) }
     }
 
-    val wavLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+    val wavLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri?.let { viewModel.loadWavFile(context, it) }
     }
 
@@ -179,10 +179,10 @@ internal fun MainScreen(
                 )
 
                 FilePickerItem(
-                    label = "Cab Impulse Response (.wav)",
+                    label = "Cab Impulse Response (mono .wav)",
                     fileName = state.irAsset?.name,
                     issue = state.irIssue,
-                    onPickFile = { wavLauncher.launch("audio/wav") },
+                    onPickFile = { wavLauncher.launch(arrayOf("*/*")) },
                     enabled = state.isEngineRunning && !busy
                 )
 

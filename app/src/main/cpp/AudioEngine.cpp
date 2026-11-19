@@ -196,6 +196,8 @@ bool AudioEngine::loadIrModel(const std::string& path) {
         // underflow the upstream convolution history length.
         dsp::ImpulseResponse::IRData data;
         const auto result = dsp::wav::Load(path.c_str(), data.mRawAudio, data.mRawAudioSampleRate);
+        if (result == dsp::wav::LoadReturnCode::ERROR_NOT_MONO)
+            throw std::runtime_error("Choose a mono WAV impulse response. Stereo WAV files are unsupported.");
         if (result != dsp::wav::LoadReturnCode::SUCCESS)
             throw std::runtime_error(dsp::wav::GetMsgForLoadReturnCode(result));
         if (data.mRawAudio.empty() || !std::isfinite(data.mRawAudioSampleRate) ||
