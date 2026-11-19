@@ -11,6 +11,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
@@ -22,6 +26,17 @@ fun MainScreen(
     onStopAudio: () -> Unit = viewModel::stopAudio
 ) {
     val state by viewModel.uiState.collectAsState()
+    MainScreen(state, viewModel, onStartAudio, onStopAudio)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun MainScreen(
+    state: A2RackState,
+    viewModel: A2RackViewModel,
+    onStartAudio: () -> Unit,
+    onStopAudio: () -> Unit
+) {
     val busy = state.isBusy || state.isTransitioning
     val context = LocalContext.current
     var showExportOptions by remember { mutableStateOf(false) }
@@ -86,17 +101,15 @@ fun MainScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Text(state.audioStatus)
-                Text(state.routeLabel, style = MaterialTheme.typography.bodyMedium)
-                AudioDeviceSelector("Input device", state.audioDevices.filter { it.input },
-                    state.selectedInputId, !busy, viewModel::selectInputDevice)
-                AudioDeviceSelector("Output device", state.audioDevices.filter { it.output },
-                    state.selectedOutputId, !busy, viewModel::selectOutputDevice)
-                if (state.audioRequested) {
-                    Button(onClick = onStopAudio) { Text("Stop Audio") }
-                }
-                if (!state.isEngineRunning && !state.isTransitioning) {
-                    Button(onClick = onStartAudio, enabled = !busy) {
-                        Text("Start Audio")
+                when {
+                    state.isEngineRunning -> Button(onClick = onStopAudio) {
+                        Text("Stop Audio")
+                    }
+                    state.isWaitingForRoute -> OutlinedButton(onClick = viewModel::stopAudio) {
+                        Text("Cancel reconnect")
+                    }
+                    !state.isTransitioning -> Button(onClick = onStartAudio, enabled = !busy) {
+                        Text(if (state.audioFailed) "Retry" else "Start Audio")
                     }
                 }
                 if (busy) {
@@ -129,8 +142,14 @@ fun MainScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Amp Bypass", style = MaterialTheme.typography.titleMedium)
-                    Switch(enabled = !busy, checked = state.isAmpBypassed, onCheckedChange = viewModel::toggleAmpBypass)
+                    val label = "Amp Bypass"
+                    Text(label, modifier = Modifier.clearAndSetSemantics {}, style = MaterialTheme.typography.titleMedium)
+                    Switch(
+                        checked = state.isAmpBypassed,
+                        onCheckedChange = viewModel::toggleAmpBypass,
+                        modifier = Modifier.semantics { contentDescription = label },
+                        enabled = !busy
+                    )
                 }
 
                 Row(
@@ -138,26 +157,14 @@ fun MainScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Cab Bypass", style = MaterialTheme.typography.titleMedium)
-                    Switch(enabled = !busy, checked = state.isCabBypassed, onCheckedChange = viewModel::toggleCabBypass)
-                }
-
-                HorizontalDivider()
-
-                // Mode switch
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("A2 Mode", style = MaterialTheme.typography.titleMedium)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Lite")
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Switch(enabled = !busy, checked = state.isA2Full, onCheckedChange = viewModel::toggleA2Mode)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Full")
-                    }
+                    val label = "Cab Bypass"
+                    Text(label, modifier = Modifier.clearAndSetSemantics {}, style = MaterialTheme.typography.titleMedium)
+                    Switch(
+                        checked = state.isCabBypassed,
+                        onCheckedChange = viewModel::toggleCabBypass,
+                        modifier = Modifier.semantics { contentDescription = label },
+                        enabled = !busy
+                    )
                 }
 
                 HorizontalDivider()
@@ -181,7 +188,16 @@ fun MainScreen(
 
                 HorizontalDivider()
 
-                // Import / Export
+                Text("Audio routing", style = MaterialTheme.typography.titleMedium)
+                Text(state.routeLabel, style = MaterialTheme.typography.bodyMedium)
+                AudioDeviceSelector("Input device", state.audioDevices.filter { it.input },
+                    state.selectedInputId, !busy, viewModel::selectInputDevice)
+                AudioDeviceSelector("Output device", state.audioDevices.filter { it.output },
+                    state.selectedOutputId, !busy, viewModel::selectOutputDevice)
+
+                HorizontalDivider()
+
+                Text("Presets", style = MaterialTheme.typography.titleMedium)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
@@ -202,15 +218,20 @@ fun MainScreen(
 
 @Composable
 fun GainControl(label: String, value: Float, onValueChange: (Float) -> Unit, enabled: Boolean = true) {
+    val displayedValue = "%.2f".format(value)
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(label, style = MaterialTheme.typography.titleMedium)
-            Text(String.format("%.2f", value))
+            Text(label, modifier = Modifier.clearAndSetSemantics {}, style = MaterialTheme.typography.titleMedium)
+            Text(displayedValue, modifier = Modifier.clearAndSetSemantics {})
         }
         Slider(
+            modifier = Modifier.semantics {
+                contentDescription = label
+                stateDescription = displayedValue
+            },
             enabled = enabled,
             value = value,
             onValueChange = onValueChange,
@@ -256,9 +277,18 @@ private fun AudioDeviceSelector(
         else devices.firstOrNull { it.id == selectedId }?.let { "${it.name} (#${it.id})" }
             ?: "Disconnected device (#$selectedId)"
     Column {
-        Text(label, style = MaterialTheme.typography.titleSmall)
+        Text(label, modifier = Modifier.clearAndSetSemantics {}, style = MaterialTheme.typography.titleSmall)
         Box {
-            OutlinedButton(enabled = enabled, onClick = { expanded = true }) { Text(selected) }
+            OutlinedButton(
+                enabled = enabled,
+                onClick = { expanded = true },
+                modifier = Modifier.semantics {
+                    contentDescription = label
+                    stateDescription = selected
+                }
+            ) {
+                Text(selected, modifier = Modifier.clearAndSetSemantics {})
+            }
             DropdownMenu(expanded = expanded && enabled, onDismissRequest = { expanded = false }) {
                 DropdownMenuItem(text = { Text("Automatic") }, onClick = {
                     expanded = false

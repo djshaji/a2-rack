@@ -122,12 +122,32 @@ class MainActivity : ComponentActivity() {
 @Preview(name = "A2 Rack • Light", showBackground = true)
 @Preview(name = "A2 Rack • Dark", showBackground = true, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
-private fun MainActivityPreview() {
+private fun MainActivityPreview() = RackScreenPreview(A2RackState())
+
+@Preview(name = "Compact phone • Large text", widthDp = 320, heightDp = 640, fontScale = 1.5f, showBackground = true)
+@Composable
+private fun CompactLargeTextPreview() = RackScreenPreview(
+    A2RackState(isEngineRunning = true, audioStatus = "Audio running", routeLabel = "USB audio interface")
+)
+
+@Preview(name = "Device disconnected", widthDp = 360, heightDp = 720, showBackground = true)
+@Composable
+private fun DisconnectedDevicePreview() = RackScreenPreview(
+    A2RackState(
+        isWaitingForRoute = true,
+        audioStatus = "Reconnect headphones or an audio interface",
+        routeLabel = "Audio device unavailable",
+        selectedOutputId = 7
+    )
+)
+
+@Composable
+private fun RackScreenPreview(state: A2RackState) {
     val previewViewModel = remember {
         A2RackViewModel(PreviewAudioBackend, Dispatchers.Main.immediate)
     }
     A2RackTheme {
-        MainScreen(viewModel = previewViewModel, onStartAudio = {})
+        MainScreen(state, previewViewModel, onStartAudio = {}, onStopAudio = {})
     }
 }
 

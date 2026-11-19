@@ -14,7 +14,7 @@ A prototype Android amp and cabinet processor built with Kotlin, Jetpack Compose
 | Audio engine | Fixed buffers, atomic controls/muting, callback-boundary model swaps, and foreground/route recovery implemented |
 | NAM models | Worker-thread loading, mono/rate validation, and stream-specific initialization implemented |
 | Cabinet responses | WAV validation and buffer warm-up implemented before activation |
-| Lite/Full mode | Switch updates UI state only; DSP behavior pending |
+| Lite/Full mode | Hidden until audio processing supports both modes |
 | Presets | Persistent model library, versioned JSON, portable ZIP bundles, and automatic session restoration implemented |
 | Diagnostics | Stream/device settings, latency estimates, xruns, signal meters, clipping, model status, and retained errors |
 | Tests | JVM coverage for storage, sessions, lifecycle/recovery, diagnostics, and controls; native/device coverage pending |
@@ -59,11 +59,11 @@ The engine starts when the activity is visible and microphone permission is gran
 
 Stop Audio mutes immediately and disables automatic restart, including while waiting for an unplugged device. This choice survives activity recreation through the ViewModel. Start Audio explicitly re-enables playback. Output remains muted while streams reopen and the session is restored against the negotiated sample rate.
 
-Loading failures preserve the previous active model. Only mono NAM models are supported; models with a known incompatible sample rate are rejected unless they support arbitrary processing rates. The Lite/Full switch currently has no effect on audio processing.
+Loading failures preserve the previous active model. Only mono NAM models are supported; models with a known incompatible sample rate are rejected unless they support arbitrary processing rates.
 
 ## Audio routes and recovery
 
-Separate Input device and Output device menus appear above the controls. Each offers Automatic or an available device reported by Android, including USB, wired, built-in, HDMI, and Bluetooth routes. Opening a route still depends on device/OS support for the engine's format. Automatic prefers USB audio, then wired headphones/headsets, then built-in audio. Changing a selection mutes and reopens streams through the recovery controller, preserving Stop Audio intent. Explicit selections survive activity recreation in the ViewModel and remain marked disconnected if their device disappears; choose another device or Automatic to recover. Selections are local to the current app session and are not included in presets.
+The **Audio routing** section below the amp and cabinet controls has separate **Input device** and **Output device** menus. Each offers Automatic or an available device reported by Android, including USB, wired, built-in, HDMI, and Bluetooth routes. Opening a route still depends on device/OS support for the engine's format. Automatic prefers USB audio, then wired headphones/headsets, then built-in audio. Changing a selection mutes and reopens streams through the recovery controller, preserving Stop Audio intent. Explicit selections survive activity recreation in the ViewModel and remain marked disconnected if their device disappears; choose another device or Automatic to recover. Selections are local to the current app session and are not included in presets.
 
 AAudio streams are pinned to the chosen IDs and mismatched routes are refused. Explicitly selecting the built-in output authorizes speaker playback after an external route disconnects.
 
@@ -121,7 +121,7 @@ Legacy path-based JSON presets can migrate generated files that still exist in t
 1. **Validate native behavior on devices.** Measure latency and dropouts during control changes and model replacement. Verify callback allocation behavior across supported NAM architectures, invalid model/IR files, and sample-rate rejection.
 2. **Verify lifecycle and routes on hardware.** Exercise USB/headphone unplug/reconnect, route sample-rate changes, permission revocation, and backgrounding during model loading. No running Android device was available during implementation.
 3. **Extend library management.** Add a model browser and explicit removal of unused assets. Model slots are restored sequentially while output is muted; the native engine does not provide a transactional two-model swap.
-4. **Implement Lite/Full processing.** Define each mode's behavior and connect the switch to the native engine.
+4. **Implement Lite/Full processing.** Define each mode’s audio behavior and restore the switch once both modes are available.
 5. **Extend device coverage.** Verify document-provider interactions, replacement pickers, native handoff races, real microphone permission flows, and physical-device recovery.
 
 ## Physical-device verification

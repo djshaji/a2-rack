@@ -23,6 +23,8 @@ internal data class AudioSessionState(
     val running: Boolean = false,
     val requested: Boolean = true,
     val transitioning: Boolean = false,
+    val waitingForRoute: Boolean = false,
+    val failed: Boolean = false,
     val status: String = "Audio stopped",
     val route: String = "System audio",
     val error: String? = null
@@ -52,11 +54,17 @@ internal class AudioSessionController(
     private var state = AudioSessionState()
 
     private fun publish(next: AudioSessionState) {
-        state = next.copy(requested = wanted)
+        state = next.copy(
+            requested = wanted,
+            waitingForRoute = foreground && permission && wanted && !faulted && routeBlocked(),
+            failed = foreground && permission && wanted && faulted
+        )
         changed(state)
     }
     private fun ready() = foreground && permission && wanted && !faulted &&
-        !noisy && route.available && (!externalRequired || route.external)
+        !routeBlocked()
+
+    private fun routeBlocked() = noisy || !route.available || (externalRequired && !route.external)
 
     fun foreground(visible: Boolean, granted: Boolean) {
         if (foreground == visible && permission == granted) return
@@ -122,7 +130,7 @@ internal class AudioSessionController(
         !wanted -> "Audio stopped"
         !foreground -> "Audio paused in background"
         !permission -> "Microphone permission required"
-        noisy || !route.available || externalRequired && !route.external ->
+        routeBlocked() ->
             "Reconnect headphones or an audio interface"
         else -> "Audio stopped"
     }

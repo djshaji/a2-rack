@@ -36,6 +36,8 @@ data class A2RackState(
     val audioRequested: Boolean = true,
     val isBusy: Boolean = false,
     val isTransitioning: Boolean = false,
+    val isWaitingForRoute: Boolean = false,
+    val audioFailed: Boolean = false,
     val audioStatus: String = "Audio stopped",
     val routeLabel: String = "System audio",
     val audioDevices: List<AudioEndpoint> = emptyList(),
@@ -75,6 +77,7 @@ class A2RackViewModel internal constructor(
             _uiState.update {
                 it.copy(isEngineRunning = next.running, audioRequested = next.requested,
                     isTransitioning = next.transitioning,
+                    isWaitingForRoute = next.waitingForRoute, audioFailed = next.failed,
                     audioStatus = next.status, routeLabel = next.route,
                     errorMessage = next.error ?: if (next.transitioning) null else it.errorMessage)
             }

@@ -155,10 +155,13 @@ class AudioSessionControllerTest {
         advanceTimeBy(400)
         runCurrent()
         assertTrue(h.state.requested)
+        assertTrue(h.state.waitingForRoute)
+        assertFalse(h.state.failed)
         assertFalse(h.state.running)
         h.controller.stop()
         runCurrent()
         assertFalse(h.state.requested)
+        assertFalse(h.state.waitingForRoute)
         h.controller.route(AudioRoute(20, 21, "USB", external = true))
         advanceTimeBy(400)
         runCurrent()
@@ -209,5 +212,7 @@ class AudioSessionControllerTest {
         assertTrue(h.backend.outputMuted)
         assertFalse(h.state.running)
         assertTrue(h.state.error!!.contains("48000"))
+        assertTrue(h.state.failed)
+        assertFalse(h.state.waitingForRoute)
     }
 }
